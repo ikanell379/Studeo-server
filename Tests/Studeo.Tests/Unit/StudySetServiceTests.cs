@@ -205,6 +205,55 @@ public class StudySetServiceTests
         Assert.Equal(8, schema["properties"]!.AsObject().Count);
     }
 
+    private StudySetService ServiceWithPages(params DocumentPage[] pages) => new(
+        new FakeDocumentRepository(_section, [.. pages]),
+        _studySets, _ai, new GeneratedStudySetValidator(), TimeProvider.System, NullLogger<StudySetService>.Instance);
+
+    [Fact]
+    public async Task Unreadable_pages_are_left_out_of_the_prompt()
+    {
+        _ai.Returns(ValidJson());
+
+        var result = await ServiceWithPages(
+                new DocumentPage { PageNumber = 3, Text = PageQualityTests.Garbage },
+                new DocumentPage { PageNumber = 4, Text = PageQualityTests.NoisyButReadable })
+            .CreateAsync(Request(), Owner, null, CancellationToken.None);
+
+        var prompt = _ai.Calls.Single().User;
+        Assert.DoesNotContain("[σελ. 3]", prompt);
+        Assert.DoesNotContain("5quodýl3rI", prompt);
+        Assert.Contains("[σελ. 4]", prompt);
+        Assert.NotEqual(ErrorCodes.NoText, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task A_section_with_only_unreadable_pages_returns_no_text_without_calling_the_model()
+    {
+        var result = await ServiceWithPages(
+                new DocumentPage { PageNumber = 3, Text = PageQualityTests.Garbage },
+                new DocumentPage { PageNumber = 4, Text = PageQualityTests.Garbage })
+            .CreateAsync(Request(), Owner, null, CancellationToken.None);
+
+        Assert.Equal(ErrorCodes.NoText, result.ErrorCode);
+        Assert.Empty(_ai.Calls);
+    }
+
+    [Fact]
+    public async Task Full_mode_amounts_count_only_readable_words()
+    {
+        var garbageWords = Sectioner.CountWords(PageQualityTests.Garbage);
+        _section.WordCount = 1200 + garbageWords;
+        var expected = FullCoverage.CountsFor(1200);
+        _ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(expected, page: 4))));
+
+        await ServiceWithPages(
+                new DocumentPage { PageNumber = 3, Text = PageQualityTests.Garbage },
+                new DocumentPage { PageNumber = 4, Text = PageQualityTests.NoisyButReadable })
+            .CreateAsync(new CreateStudySetRequest(_section.Id, "medium", null, StudySetModes.Full), Owner, null, CancellationToken.None);
+
+        Assert.Contains($"- theory: {expected.Theory}", _ai.Calls.Single().User);
+    }
+
     [Fact]
     public async Task Full_mode_covers_the_whole_section_with_amounts_from_its_length()
     {
@@ -256,7 +305,7 @@ public class StudySetServiceTests
     }
 
     [Fact]
-    public async Task Second_attempt_starts_progress_again_as_attempt_2()
+    public async Task Second_attempt_is_reported_as_attempt_2_without_the_bar_going_back()
     {
         _ai.Returns(AiResult.Ok("{\"theory\":[{\"page\":1}]}"), ValidJson());
         var progress = new RecordingProgress();
@@ -264,9 +313,53 @@ public class StudySetServiceTests
         await Service().CreateAsync(Request(), Owner, progress, CancellationToken.None);
 
         var second = progress.Reports.SkipWhile(p => p.Attempt == 1).ToList();
-        Assert.Equal(new GenerationProgress(GenerationProgress.Reading, 2, 0, StudySetService.TotalItems(Counts), 3), second[0]);
+        // The first answer got one item done: the second one starts there (writing 1 of N), not back at "reading".
+        Assert.Equal(new GenerationProgress(GenerationProgress.Writing, 2, 1, StudySetService.TotalItems(Counts),
+            GenerationProgress.For(GenerationProgress.Writing, 2, 1, StudySetService.TotalItems(Counts)).Percent), second[0]);
         Assert.Equal(GenerationProgress.Saving, second[^1].Stage);
         Assert.Equal(2, second[^1].Attempt);
+        AssertNeverGoesBack(progress);
+    }
+
+    [Fact]
+    public async Task An_answer_that_starts_over_does_not_move_the_bar_back()
+    {
+        // The connection broke after part of the answer and the client asked again (Restart, then the full answer).
+        var json = TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3));
+        var ai = new RestartingAiClient(json[..(json.Length * 3 / 4)], json);
+        var progress = new RecordingProgress();
+        var service = new StudySetService(
+            new FakeDocumentRepository(_section,
+                [new DocumentPage { PageNumber = 3, Text = "Η φωτοσύνθεση." }, new DocumentPage { PageNumber = 4, Text = "Οξυγόνο." }]),
+            _studySets, ai, new GeneratedStudySetValidator(), TimeProvider.System, NullLogger<StudySetService>.Instance);
+
+        var result = await service.CreateAsync(Request(), Owner, progress, CancellationToken.None);
+
+        Assert.Null(result.ErrorCode);
+        AssertNeverGoesBack(progress);
+        Assert.DoesNotContain(progress.Reports.SkipWhile(p => p.Done == 0), p => p.Stage == GenerationProgress.Reading);
+    }
+
+    private static void AssertNeverGoesBack(RecordingProgress progress)
+    {
+        var percents = progress.Reports.Select(p => p.Percent).ToList();
+        Assert.Equal(percents.Order(), percents);
+        var done = progress.Reports.Select(p => p.Done).ToList();
+        Assert.Equal(done.Order(), done);
+    }
+
+    /// <summary>Streams a partial answer, starts over (like a retry after a broken stream), then the full one.</summary>
+    private sealed class RestartingAiClient(string partial, string full) : IAiClient
+    {
+        public Task<AiResult> CompleteJsonAsync(string system, string user, System.Text.Json.Nodes.JsonObject schema,
+            IAiOutputObserver? output, CancellationToken ct)
+        {
+            output?.Restart();
+            output?.Append(partial);
+            output?.Restart();
+            for (var i = 0; i < full.Length; i += 7) output?.Append(full.Substring(i, Math.Min(7, full.Length - i)));
+            return Task.FromResult(AiResult.Ok(full));
+        }
     }
 
     private sealed class RecordingProgress : IProgress<GenerationProgress>
@@ -291,6 +384,10 @@ public class StudySetServiceTests
         public Task AddAsync(Document document, CancellationToken ct) => throw new NotSupportedException();
         public Task<Document?> GetAsync(Guid id, string ownerId, CancellationToken ct) => throw new NotSupportedException();
         public Task<IReadOnlyList<DocumentSummaryResponse>> ListAsync(string ownerId, CancellationToken ct) => throw new NotSupportedException();
+        public Task<Document?> FindByHashAsync(string ownerId, string contentHash, CancellationToken ct) => throw new NotSupportedException();
+        public Task<Document?> FindByTextHashAsync(string ownerId, string textHash, CancellationToken ct) => throw new NotSupportedException();
+        public Task<Document?> SetCourseAsync(Guid id, string ownerId, Guid? courseId, CancellationToken ct) => throw new NotSupportedException();
+        public Task<bool> DeleteAsync(Guid id, string ownerId, CancellationToken ct) => throw new NotSupportedException();
         public Task<IReadOnlyList<DocumentPage>> GetPagesAsync(Guid documentId, CancellationToken ct) => throw new NotSupportedException();
         public Task<IReadOnlyList<Section>> GetSectionsAsync(Guid documentId, CancellationToken ct) => throw new NotSupportedException();
 

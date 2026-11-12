@@ -8,12 +8,28 @@ public class DocumentService(
     IPdfTextExtractor extractor,
     ISectioner sectioner,
     IDocumentRepository repository,
+    ICourseRepository courses,
     TimeProvider timeProvider) : IDocumentService
 {
     private const int MaxFileNameLength = 260;
 
-    public async Task<UploadDocumentResult> UploadAsync(string ownerId, string fileName, byte[] content, CancellationToken ct)
+    public async Task<UploadDocumentResult> UploadAsync(
+        string ownerId, string fileName, byte[] content, Guid? courseId, CancellationToken ct)
     {
+        if (courseId is { } id && await courses.GetAsync(id, ownerId, ct) is null)
+        {
+            return new UploadDocumentResult(null, ErrorCodes.NotFound);
+        }
+
+        // A PDF the user already has: tell them instead of storing it twice.
+        // First the very same file (cheap, before extracting), then the same text (re-saved PDF, or one stored
+        // before file hashes existed).
+        var hash = ContentHash(content);
+        if (await repository.FindByHashAsync(ownerId, hash, ct) is { } sameFile)
+        {
+            return new UploadDocumentResult(null, ErrorCodes.DuplicateDocument, ToResponse(sameFile));
+        }
+
         var extraction = extractor.Extract(content, DocumentLimits.MaxPages);
         if (extraction.ErrorCode is not null)
         {
@@ -25,17 +41,26 @@ public class DocumentService(
             return new UploadDocumentResult(null, ErrorCodes.NoText);
         }
 
+        var textHash = DocumentHashes.TextHash(extraction.Pages);
+        if (await repository.FindByTextHashAsync(ownerId, textHash, ct) is { } sameText)
+        {
+            return new UploadDocumentResult(null, ErrorCodes.DuplicateDocument, ToResponse(sameText));
+        }
+
         var document = new Document
         {
             Id = Guid.NewGuid(),
             OwnerId = ownerId,
+            CourseId = courseId,
+            ContentHash = hash,
+            TextHash = textHash,
             FileName = SafeFileName(fileName),
             PageCount = extraction.Pages.Count,
             UploadedAt = timeProvider.GetUtcNow(),
             Pages = extraction.Pages
                 .Select((text, i) => new DocumentPage { Id = Guid.NewGuid(), PageNumber = i + 1, Text = text })
                 .ToList(),
-            Sections = WithWholeDocument(sectioner.Split(extraction.Pages), extraction.Pages),
+            Sections = WithWholeDocument(sectioner.Split(extraction.Pages, extraction.Headings), extraction.Pages),
         };
 
         await repository.AddAsync(document, ct);
@@ -58,8 +83,11 @@ public class DocumentService(
             return null;
         }
         var sections = await repository.GetSectionsAsync(documentId, ct);
+        var pages = await repository.GetPagesAsync(documentId, ct);
+        var unreadable = PageQuality.UnreadablePages(pages.OrderBy(p => p.PageNumber).Select(p => p.Text));
         return sections
-            .Select(s => new SectionResponse(s.Id, s.Order, s.Title, s.StartPage, s.EndPage, s.WordCount, s.IsWholeDocument))
+            .Select(s => new SectionResponse(s.Id, s.Order, s.Title, s.StartPage, s.EndPage, s.WordCount, s.IsWholeDocument,
+                unreadable.Where(p => p >= s.StartPage && p <= s.EndPage).ToList()))
             .ToList();
     }
 
@@ -122,5 +150,22 @@ public class DocumentService(
         return name.Length <= MaxFileNameLength ? name : name[^MaxFileNameLength..];
     }
 
-    private static DocumentResponse ToResponse(Document d) => new(d.Id, d.FileName, d.PageCount, d.UploadedAt);
+    public async Task<UploadDocumentResult> MoveAsync(Guid id, string ownerId, Guid? courseId, CancellationToken ct)
+    {
+        if (courseId is { } cid && await courses.GetAsync(cid, ownerId, ct) is null)
+        {
+            return new UploadDocumentResult(null, ErrorCodes.NotFound);
+        }
+        var document = await repository.SetCourseAsync(id, ownerId, courseId, ct);
+        return document is null
+            ? new UploadDocumentResult(null, ErrorCodes.NotFound)
+            : new UploadDocumentResult(ToResponse(document), null);
+    }
+
+    public Task<bool> DeleteAsync(Guid id, string ownerId, CancellationToken ct) => repository.DeleteAsync(id, ownerId, ct);
+
+    /// <summary>SHA-256 of the file, lower-case hex (64 characters).</summary>
+    internal static string ContentHash(byte[] content) => DocumentHashes.ContentHash(content);
+
+    private static DocumentResponse ToResponse(Document d) => new(d.Id, d.FileName, d.PageCount, d.UploadedAt, d.CourseId);
 }

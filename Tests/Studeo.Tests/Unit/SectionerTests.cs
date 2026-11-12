@@ -228,4 +228,81 @@ public class SectionerTests
     {
         Assert.Equal(3, Sectioner.CountWords("Το κύτταρο — 42 ..."));
     }
+
+    [Fact]
+    public void Bold_headings_split_the_text_when_it_has_no_keyword_headings()
+    {
+        var pages = Enumerable.Range(1, 8).Select(_ => Page(Words(400))).ToArray();
+        StyledHeading[] styled =
+        [
+            new(2, "25.2. Οι υλικές δυνάμεις", AtTop: false),
+            new(5, "25.3. Κυρίαρχη τάξη", AtTop: true),
+            new(5, "1. Υποενότητα στην ίδια σελίδα", AtTop: false),
+            new(7, "Σημειώσεις", AtTop: false),
+        ];
+
+        var sections = _sectioner.Split(pages, styled);
+
+        Assert.Equal(
+            [("Εισαγωγή", 1, 2), ("25.2. Οι υλικές δυνάμεις", 2, 4), ("25.3. Κυρίαρχη τάξη", 5, 7), ("Σημειώσεις", 7, 8)],
+            sections.Select(s => (s.Title, s.StartPage, s.EndPage)));
+    }
+
+    [Fact]
+    public void Keyword_headings_come_before_bold_headings()
+    {
+        var pages = new[] { Page("Κεφάλαιο 1", Words(200)), Page(Words(200)), Page("Κεφάλαιο 2", Words(200)), Page(Words(200)) };
+        StyledHeading[] styled = [new(2, "Ένας έντονος τίτλος", false), new(4, "Άλλος έντονος τίτλος", false)];
+
+        var sections = _sectioner.Split(pages, styled);
+
+        Assert.Equal(["Κεφάλαιο 1", "Κεφάλαιο 2"], sections.Select(s => s.Title));
+    }
+
+    [Fact]
+    public void Bold_titles_on_almost_every_page_are_slides_not_headings()
+    {
+        var pages = Enumerable.Range(1, 6).Select(_ => Page(Words(300))).ToArray();
+        var styled = Enumerable.Range(1, 5).Select(p => new StyledHeading(p, $"Τίτλος {p}", true)).ToArray();
+
+        var sections = _sectioner.Split(pages, styled);
+
+        Assert.DoesNotContain(sections, s => s.Title.StartsWith("Τίτλος"));
+    }
+
+    [Fact]
+    public void A_single_bold_heading_does_not_split()
+    {
+        var pages = new[] { Page(Words(300)), Page(Words(300)), Page(Words(300)) };
+
+        var sections = _sectioner.Split(pages, [new StyledHeading(2, "Μόνος τίτλος", false)]);
+
+        Assert.Equal([Sectioner.WholeDocumentTitle], sections.Select(s => s.Title));
+    }
+
+    [Fact]
+    public void Running_headers_with_page_numbers_are_not_numbered_headings()
+    {
+        // "25 Karl Marx 281": chapter number, author, page number at the top of every page.
+        var pages = Enumerable.Range(0, 6)
+            .Select(i => Page($"25 Karl Marx {281 + i}", Words(600)))
+            .ToArray();
+
+        var sections = _sectioner.Split(pages);
+
+        Assert.DoesNotContain(sections, s => s.Title.Contains("Marx"));
+    }
+
+    [Fact]
+    public void Repeated_bold_running_headers_are_dropped()
+    {
+        var pages = Enumerable.Range(1, 10).Select(_ => Page(Words(300))).ToArray();
+        var styled = new[] { 2, 4, 6 }.Select(p => new StyledHeading(p, $"{280 + p} Γενεαλογίες της Κοινωνιολογίας", true))
+            .Concat([new StyledHeading(3, "1. Πρώτη ενότητα", false), new StyledHeading(8, "2. Δεύτερη ενότητα", false)])
+            .ToArray();
+
+        var sections = _sectioner.Split(pages, styled);
+
+        Assert.Equal(["Εισαγωγή", "1. Πρώτη ενότητα", "2. Δεύτερη ενότητα"], sections.Select(s => s.Title));
+    }
 }

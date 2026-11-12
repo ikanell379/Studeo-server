@@ -20,8 +20,34 @@ public class DocumentRepository(StudeoDbContext db) : IDocumentRepository
             .Where(d => d.OwnerId == ownerId)
             .OrderByDescending(d => d.UploadedAt)
             .Select(d => new DocumentSummaryResponse(
-                d.Id, d.FileName, d.PageCount, d.UploadedAt, d.Sections.SelectMany(s => s.StudySets).Count()))
+                d.Id, d.FileName, d.PageCount, d.UploadedAt, d.Sections.SelectMany(s => s.StudySets).Count(), d.CourseId))
             .ToListAsync(ct);
+
+    public Task<Document?> FindByHashAsync(string ownerId, string contentHash, CancellationToken ct) =>
+        db.Documents.AsNoTracking()
+            .Where(d => d.OwnerId == ownerId && d.ContentHash == contentHash)
+            .OrderBy(d => d.UploadedAt)
+            .FirstOrDefaultAsync(ct);
+
+    // The pages, sections and study sets go with it (foreign keys ON DELETE CASCADE).
+    public async Task<bool> DeleteAsync(Guid id, string ownerId, CancellationToken ct) =>
+        await db.Documents.Where(d => d.Id == id && d.OwnerId == ownerId).ExecuteDeleteAsync(ct) > 0;
+
+    public Task<Document?> FindByTextHashAsync(string ownerId, string textHash, CancellationToken ct) =>
+        db.Documents.AsNoTracking()
+            .Where(d => d.OwnerId == ownerId && d.TextHash == textHash)
+            .OrderBy(d => d.UploadedAt)
+            .FirstOrDefaultAsync(ct);
+
+    public async Task<Document?> SetCourseAsync(Guid id, string ownerId, Guid? courseId, CancellationToken ct)
+    {
+        var document = await db.Documents.FirstOrDefaultAsync(d => d.Id == id && d.OwnerId == ownerId, ct);
+        if (document is null) return null;
+
+        document.CourseId = courseId;
+        await db.SaveChangesAsync(ct);
+        return document;
+    }
 
     public async Task<IReadOnlyList<DocumentPage>> GetPagesAsync(Guid documentId, CancellationToken ct) =>
         await db.DocumentPages.AsNoTracking()

@@ -35,9 +35,22 @@ public partial class Sectioner : ISectioner
     /// <summary>The title of the single section when nothing splits the document.</summary>
     public const string WholeDocumentTitle = "Ολόκληρο το κείμενο";
 
-    private record Heading(int Page, string Title, bool AtTop);
+    internal record Heading(int Page, string Title, bool AtTop);
 
-    public IReadOnlyList<SectionDraft> Split(IReadOnlyList<string> pages)
+    /// <summary>Styled headings are not used when this share of pages (or more) has one: slides with bold titles.</summary>
+    public const double MaxStyledHeadingPageShare = 0.6;
+
+    /// <summary>A line found on at least this many pages is a running header/footer, not a heading.</summary>
+    public const int MinRunningHeaderPages = 3;
+
+    public IReadOnlyList<SectionDraft> Split(IReadOnlyList<string> pages) => Split(pages, []);
+
+    /// <summary>
+    /// Headings, strongest signal first: «Κεφάλαιο / Ενότητα N» in the text; then lines set in bold
+    /// (<paramref name="styled"/>, from the PDF's fonts); then numbered lines ("2. Το κύτταρο"); then slide titles;
+    /// otherwise chunks of about 3,000 words.
+    /// </summary>
+    public IReadOnlyList<SectionDraft> Split(IReadOnlyList<string> pages, IReadOnlyList<StyledHeading> styled)
     {
         if (pages.Count == 0)
         {
@@ -48,7 +61,11 @@ public partial class Sectioner : ISectioner
         var headings = FindHeadings(pages, IsKeywordHeading, minCount: 1);
         if (headings.Count == 0)
         {
-            headings = FindHeadings(pages, IsNumberedHeading, minCount: 2);
+            headings = FromStyled(styled, pages.Count);
+        }
+        if (headings.Count == 0)
+        {
+            headings = WithoutRunningHeaders(FindHeadings(pages, IsNumberedHeading, minCount: 2), minCount: 2);
         }
 
         var sections = headings.Count > 0
@@ -198,6 +215,43 @@ public partial class Sectioner : ISectioner
             : ranges.Select((r, i) => new SectionDraft(title(i + 1), r.Start, r.End, r.Words)).ToList();
     }
 
+    /// <summary>
+    /// Bold headings from the PDF: one per page (the first), without running headers. Not used for fewer than two,
+    /// or when most pages have one (slides with bold titles are better split by <see cref="FromSlideTitles"/>).
+    /// </summary>
+    internal static List<Heading> FromStyled(IReadOnlyList<StyledHeading> styled, int pageCount)
+    {
+        var headings = WithoutRunningHeaders(
+                styled.Where(h => h.Page >= 1 && h.Page <= pageCount)
+                    .Select(h => new Heading(h.Page, CollapseSpaces(h.Title), h.AtTop))
+                    .Where(h => h.Title.Length > 0)
+                    .ToList(),
+                minCount: 0)
+            .OrderBy(h => h.Page)
+            .GroupBy(h => h.Page)
+            .Select(g => g.First())
+            .ToList();
+
+        var tooMany = pageCount >= MinSlidePages && headings.Count > MaxStyledHeadingPageShare * pageCount;
+        return headings.Count >= 2 && !tooMany ? headings : [];
+    }
+
+    /// <summary>
+    /// Drops lines that repeat on many pages with only a page number changing ("25 Karl Marx 281",
+    /// "Γενεαλογίες της Κοινωνιολογίας 290"): running headers and footers. Empty if fewer than minCount remain.
+    /// </summary>
+    internal static List<Heading> WithoutRunningHeaders(List<Heading> headings, int minCount)
+    {
+        static string Key(string title) => EdgeNumbersRegex().Replace(Normalize(title), "").Trim();
+
+        var repeating = headings.GroupBy(h => Key(h.Title))
+            .Where(g => g.Select(h => h.Page).Distinct().Count() >= MinRunningHeaderPages)
+            .Select(g => g.Key)
+            .ToHashSet();
+        var kept = headings.Where(h => !repeating.Contains(Key(h.Title))).ToList();
+        return kept.Count >= minCount ? kept : [];
+    }
+
     private static List<Heading> FindHeadings(IReadOnlyList<string> pages, Func<string, bool> isHeading, int minCount)
     {
         var found = new List<Heading>();
@@ -277,4 +331,8 @@ public partial class Sectioner : ISectioner
 
     [GeneratedRegex(@"\s+")]
     private static partial Regex WhitespaceRegex();
+
+    /// <summary>Page numbers at the start or end of a line.</summary>
+    [GeneratedRegex(@"^[\d\s|.\-–]+|[\d\s|.\-–]+$")]
+    private static partial Regex EdgeNumbersRegex();
 }

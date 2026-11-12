@@ -24,12 +24,14 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IHealthRepository, HealthRepository>();
 builder.Services.AddScoped<IDocumentRepository, DocumentRepository>();
 builder.Services.AddScoped<IStudySetRepository, StudySetRepository>();
+builder.Services.AddScoped<ICourseRepository, CourseRepository>();
 
 // Services
 builder.Services.AddScoped<IHealthService, HealthService>();
 builder.Services.AddSingleton<IPdfTextExtractor, PdfTextExtractor>();
 builder.Services.AddSingleton<ISectioner, Sectioner>();
 builder.Services.AddScoped<IDocumentService, DocumentService>();
+builder.Services.AddScoped<ICourseService, CourseService>();
 builder.Services.AddAiClient(builder.Configuration); // "Ai:Provider": Claude | Gemini
 builder.Services.AddScoped<IStudySetService, StudySetService>();
 builder.Services.AddHttpClient<IKeycloakClient, KeycloakClient>();

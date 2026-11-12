@@ -21,6 +21,8 @@ public class DocumentsController(
     [RequestFormLimits(MultipartBodyLengthLimit = DocumentLimits.MaxRequestBytes)]
     [ProducesResponseType<DocumentResponse>(StatusCodes.Status201Created)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status422UnprocessableEntity)]
     public async Task<ActionResult<DocumentResponse>> Upload([FromForm] UploadDocumentRequest request, CancellationToken ct)
     {
@@ -39,10 +41,19 @@ public class DocumentsController(
             content = buffer.ToArray();
         }
 
-        var result = await documentService.UploadAsync(User.UserId(), file.FileName, content, ct);
-        if (result.ErrorCode is not null)
+        var result = await documentService.UploadAsync(User.UserId(), file.FileName, content, request.CourseId, ct);
+        switch (result.ErrorCode)
         {
-            return Error(StatusCodes.Status422UnprocessableEntity, result.ErrorCode, null);
+            case null:
+                break;
+            case ErrorCodes.DuplicateDocument:
+                var duplicate = Error(StatusCodes.Status409Conflict, result.ErrorCode, null);
+                ((ProblemDetails)duplicate.Value!).Extensions["document"] = result.Existing;
+                return duplicate;
+            case ErrorCodes.NotFound:
+                return Error(StatusCodes.Status404NotFound, result.ErrorCode, null);
+            default:
+                return Error(StatusCodes.Status422UnprocessableEntity, result.ErrorCode, null);
         }
 
         return CreatedAtAction(nameof(Get), new { id = result.Document!.Id }, result.Document);
@@ -77,6 +88,30 @@ public class DocumentsController(
             ? Error(StatusCodes.Status404NotFound, ErrorCodes.NotFound, null)
             : Ok(sections);
     }
+
+    /// <summary>Files the PDF (with its quizzes) under one of the user's courses; courseId null takes it out.</summary>
+    [HttpPut("{id:guid}/course")]
+    [ProducesResponseType<DocumentResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<DocumentResponse>> Move(Guid id, MoveDocumentRequest request, CancellationToken ct)
+    {
+        var result = await documentService.MoveAsync(id, User.UserId(), request.CourseId, ct);
+        return result.ErrorCode is null
+            ? Ok(result.Document)
+            : Error(StatusCodes.Status404NotFound, result.ErrorCode, null);
+    }
+
+    /// <summary>
+    /// Deletes the PDF for good, with everything made from it: its text, sections and all its quizzes.
+    /// The same file can then be uploaded again.
+    /// </summary>
+    [HttpDelete("{id:guid}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct) =>
+        await documentService.DeleteAsync(id, User.UserId(), ct)
+            ? NoContent()
+            : Error(StatusCodes.Status404NotFound, ErrorCodes.NotFound, null);
 
     private ObjectResult Error(int status, string code, string? detail)
     {

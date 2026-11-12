@@ -22,10 +22,43 @@ namespace Studeo.Api.Models.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Studeo.Api.Models.Course", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("OwnerId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OwnerId", "Name");
+
+                    b.ToTable("Courses");
+                });
+
             modelBuilder.Entity("Studeo.Api.Models.Document", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ContentHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid?>("CourseId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("FileName")
@@ -41,10 +74,20 @@ namespace Studeo.Api.Models.Migrations
                     b.Property<int>("PageCount")
                         .HasColumnType("integer");
 
+                    b.Property<string>("TextHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<DateTimeOffset>("UploadedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CourseId");
+
+                    b.HasIndex("OwnerId", "ContentHash");
+
+                    b.HasIndex("OwnerId", "TextHash");
 
                     b.HasIndex("OwnerId", "UploadedAt");
 
@@ -148,6 +191,16 @@ namespace Studeo.Api.Models.Migrations
                     b.ToTable("StudySets");
                 });
 
+            modelBuilder.Entity("Studeo.Api.Models.Document", b =>
+                {
+                    b.HasOne("Studeo.Api.Models.Course", "Course")
+                        .WithMany("Documents")
+                        .HasForeignKey("CourseId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.Navigation("Course");
+                });
+
             modelBuilder.Entity("Studeo.Api.Models.DocumentPage", b =>
                 {
                     b.HasOne("Studeo.Api.Models.Document", "Document")
@@ -179,6 +232,11 @@ namespace Studeo.Api.Models.Migrations
                         .IsRequired();
 
                     b.Navigation("Section");
+                });
+
+            modelBuilder.Entity("Studeo.Api.Models.Course", b =>
+                {
+                    b.Navigation("Documents");
                 });
 
             modelBuilder.Entity("Studeo.Api.Models.Document", b =>

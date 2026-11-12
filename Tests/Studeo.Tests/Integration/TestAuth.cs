@@ -17,6 +17,14 @@ public record TestUser(string Id, string[] RealmRoles, string Name = "Μαρία
     public static readonly TestUser Student = new("11111111-1111-1111-1111-111111111111", [Roles.Student]);
     public static readonly TestUser Teacher = new("22222222-2222-2222-2222-222222222222", [Roles.Teacher]);
 
+    /// <summary>
+    /// A user with nothing uploaded yet, so lists only show what the test made and uploading the
+    /// sample PDF isn't a duplicate of another test's upload.
+    /// </summary>
+    public static TestUser NewStudent() => new(Guid.NewGuid().ToString(), [Roles.Student]);
+
+    public static TestUser NewTeacher() => new(Guid.NewGuid().ToString(), [Roles.Teacher]);
+
     /// <summary>A Keycloak account without a Studeo role (e.g. made by hand in the admin console).</summary>
     public static TestUser WithoutRole() => new(Guid.NewGuid().ToString(), ["offline_access"]);
 

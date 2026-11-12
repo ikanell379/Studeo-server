@@ -31,13 +31,33 @@ public class StudySetService(
             return new StudySetResult(null, ErrorCodes.NotFound);
         }
 
-        // "full": the amounts follow the section's length; otherwise what the user chose.
-        var counts = request.IsFull ? FullCoverage.CountsFor(section.WordCount) : request.Counts!;
-        var total = TotalItems(counts);
-        void Report(string stage, int attempt, int done) =>
-            progress?.Report(GenerationProgress.For(stage, attempt, done, total));
+        // Pages whose text can't be read (a bad scan) would only feed the model garbage: leave them out.
+        var allPages = await documents.GetPagesAsync(section.DocumentId, section.StartPage, section.EndPage, ct);
+        var unreadable = allPages.Where(p => PageQuality.IsUnreadable(p.Text)).ToList();
+        var pages = allPages.Except(unreadable).ToList();
+        if (pages.Count == 0)
+        {
+            return new StudySetResult(null, ErrorCodes.NoText);
+        }
 
-        var pages = await documents.GetPagesAsync(section.DocumentId, section.StartPage, section.EndPage, ct);
+        // "full": the amounts follow the length of the readable text; otherwise what the user chose.
+        var readableWords = Math.Max(0, section.WordCount - unreadable.Sum(p => Sectioner.CountWords(p.Text)));
+        var counts = request.IsFull ? FullCoverage.CountsFor(readableWords) : request.Counts!;
+        var total = TotalItems(counts);
+
+        // The answer may start over (a broken connection, or a second attempt after a failed check); the bar
+        // must not jump back for that: it holds at the furthest point until the new answer gets past it.
+        var furthest = 0;
+        void Report(string stage, int attempt, int done)
+        {
+            furthest = Math.Max(furthest, done);
+            if (stage == GenerationProgress.Reading && furthest > 0)
+            {
+                stage = GenerationProgress.Writing;
+            }
+            progress?.Report(GenerationProgress.For(stage, attempt, furthest, total));
+        }
+
         var user = GenerateStudySetPrompt.User(section.Title, SectionText(pages.Select(p => (p.PageNumber, p.Text))),
             request.Difficulty, counts, request.IsFull);
         var schema = GenerateStudySetPrompt.OutputSchema();

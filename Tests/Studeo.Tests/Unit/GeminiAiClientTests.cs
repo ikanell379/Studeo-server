@@ -172,6 +172,67 @@ public class GeminiAiClientTests
         Assert.Equal(2, _handler.Requests.Count);
     }
 
+    private const string DailyQuota =
+        "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"Quota exceeded\",\"details\":[{\"violations\":[" +
+        "{\"quotaId\":\"GenerateRequestsPerDayPerProjectPerModel-FreeTier\"}]}]}}";
+
+    [Fact]
+    public async Task A_stream_that_ends_without_a_finish_reason_is_retried_not_returned_cut()
+    {
+        _handler.RespondStream(Candidate(null, new { text = "{\"theory\":[{\"concept\":\"Φωτοσ" }));
+        _handler.Then(HttpStatusCode.OK, Candidate("STOP", new { text = "{}" }));
+
+        var result = await Call(Client());
+
+        Assert.Equal("{}", result.Json);
+        Assert.Equal(2, _handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task A_stream_that_always_breaks_off_returns_ai_failed()
+    {
+        _handler.RespondStream(Candidate(null, new { text = "{\"a\":" }));
+
+        Assert.Equal(ErrorCodes.AiFailed, (await Call(Client())).ErrorCode);
+        Assert.Equal(3, _handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task An_error_inside_the_stream_is_retried()
+    {
+        _handler.RespondStream(
+            Candidate(null, new { text = "{\"a\":" }),
+            "{\"error\":{\"code\":429,\"message\":\"Resource exhausted\",\"status\":\"RESOURCE_EXHAUSTED\"}}");
+        _handler.Then(HttpStatusCode.OK, Candidate("STOP", new { text = "{}" }));
+
+        var result = await Call(Client());
+
+        Assert.Equal("{}", result.Json);
+        Assert.Equal(["restart", "{\"a\":", "restart", "{}"], _seen.Events);
+    }
+
+    [Fact]
+    public async Task Used_up_daily_quota_skips_to_the_fallback_model_without_retrying()
+    {
+        _handler.Respond(HttpStatusCode.TooManyRequests, DailyQuota);
+        _handler.Then(HttpStatusCode.OK, Candidate("STOP", new { text = "{}" }));
+
+        var result = await Call(Client(model: "main", fallback: "lite"));
+
+        Assert.Equal("{}", result.Json);
+        Assert.Equal(2, _handler.Requests.Count);
+        Assert.Contains("models/lite:", _handler.Requests[1].Uri);
+    }
+
+    [Fact]
+    public async Task Used_up_daily_quota_everywhere_returns_ai_quota()
+    {
+        _handler.Respond(HttpStatusCode.TooManyRequests, DailyQuota);
+
+        Assert.Equal(ErrorCodes.AiQuota, (await Call(Client(model: "main", fallback: "lite"))).ErrorCode);
+        Assert.Equal(2, _handler.Requests.Count); // once per model
+    }
+
     [Fact]
     public async Task Max_tokens_returns_ai_invalid_output()
     {

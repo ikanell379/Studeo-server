@@ -8,7 +8,8 @@ namespace Studeo.Api.Services;
 /// Calls the Google Gemini API (streamGenerateContent, server-sent events) with structured output (responseJsonSchema),
 /// so the caller can follow the answer while it is written.
 /// Settings: Gemini:ApiKey, Gemini:Model, Gemini:FallbackModel (optional, used when the main model is overloaded).
-/// Transient errors (429, 5xx, timeouts) are retried with a short backoff.
+/// Transient errors (429, 5xx, timeouts, errors inside the stream, a stream that ends before the answer is finished)
+/// are retried with a short backoff; a used-up daily quota skips straight to the fallback model.
 /// </summary>
 public sealed class GeminiAiClient(HttpClient http, IConfiguration configuration, ILogger<GeminiAiClient> logger) : IAiClient
 {
@@ -74,10 +75,29 @@ public sealed class GeminiAiClient(HttpClient http, IConfiguration configuration
                 }
                 lastError = transientError;
                 logger.LogWarning("Gemini {Model} attempt {Attempt} failed ({Error}).", model, attempt + 1, transientError);
+                if (transientError == ErrorCodes.AiQuota)
+                {
+                    break; // the model's daily limit is used up: retrying it today won't help, try the next model
+                }
             }
         }
         return AiResult.Fail(lastError);
     }
+
+    /// <summary>
+    /// A 429 / RESOURCE_EXHAUSTED for a per-day quota (e.g. the free tier's requests per day) lasts until the
+    /// quota resets, unlike a per-minute limit or an overloaded model.
+    /// </summary>
+    internal static bool IsDailyQuota(string errorBody) =>
+        errorBody.Contains("PerDay", StringComparison.Ordinal) || errorBody.Contains("per day", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>A Gemini error (HTTP or inside the stream) as one of our codes; all of them are worth retrying.</summary>
+    private static string TransientCodeFor(int status, string errorBody) => status switch
+    {
+        429 when IsDailyQuota(errorBody) => ErrorCodes.AiQuota,
+        429 or 503 => ErrorCodes.AiBusy,
+        _ => ErrorCodes.AiFailed,
+    };
 
     private IEnumerable<string> Models()
     {
@@ -115,8 +135,7 @@ public sealed class GeminiAiClient(HttpClient http, IConfiguration configuration
                 logger.LogError("Gemini {Model} call failed: {Status} {Body}", model, status, text);
                 return status switch
                 {
-                    429 or 503 => (null, ErrorCodes.AiBusy),
-                    500 or 502 or 504 => (null, ErrorCodes.AiFailed),
+                    429 or 500 or 502 or 503 or 504 => (null, TransientCodeFor(status, text)),
                     _ => (AiResult.Fail(ErrorCodes.AiFailed), null), // 400/401/403/404: retrying won't help
                 };
             }
@@ -150,6 +169,22 @@ public sealed class GeminiAiClient(HttpClient http, IConfiguration configuration
         {
             logger.LogError(ex, "Gemini API sent a piece that is not JSON.");
             return (AiResult.Fail(ErrorCodes.AiFailed), null);
+        }
+
+        // An error sent inside the stream (e.g. a rate limit hit while writing) ends the answer early.
+        if (answer.Error is { } error)
+        {
+            logger.LogError("Gemini {Model} stopped with an error after {Chars} characters: {Error}",
+                model, answer.Text.Length, error.Body);
+            return (null, TransientCodeFor(error.Status, error.Body));
+        }
+
+        // A finished answer always ends with a finish reason; without one the stream broke off and the JSON is cut.
+        if (answer.SawCandidate && answer.FinishReason is null && answer.BlockReason is null)
+        {
+            logger.LogWarning("Gemini {Model} stream ended before the answer was finished ({Chars} characters, usage={Usage}).",
+                model, answer.Text.Length, answer.Usage);
+            return (null, ErrorCodes.AiFailed);
         }
 
         return (Read(answer, model), null);
@@ -191,9 +226,19 @@ public sealed class GeminiAiClient(HttpClient http, IConfiguration configuration
         public string? BlockReason { get; private set; }
         public string? Usage { get; private set; }
 
+        /// <summary>An error event in the stream: its HTTP-like code (0 if none) and the raw JSON.</summary>
+        public (int Status, string Body)? Error { get; private set; }
+
         /// <summary>Adds one chunk; returns its visible text (thought parts are skipped).</summary>
         public string Add(JsonElement chunk)
         {
+            if (chunk.TryGetProperty("error", out var error))
+            {
+                var status = error.ValueKind == JsonValueKind.Object && error.TryGetProperty("code", out var code)
+                    && code.TryGetInt32(out var c) ? c : 0;
+                Error = (status, error.GetRawText());
+                return "";
+            }
             if (chunk.TryGetProperty("promptFeedback", out var feedback) && feedback.TryGetProperty("blockReason", out var block))
             {
                 BlockReason = block.GetString();

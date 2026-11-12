@@ -30,7 +30,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Create_generates_stores_and_get_returns_it()
     {
-        var client = factory.CreateClientAs(TestUser.Student);
+        var client = factory.CreateClientAs(TestUser.NewStudent());
         var section = await UploadAndGetSecondSection(client);
         factory.Ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3))));
 
@@ -51,7 +51,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Create_with_invalid_ai_output_twice_returns_422()
     {
-        var client = factory.CreateClientAs(TestUser.Student);
+        var client = factory.CreateClientAs(TestUser.NewStudent());
         var section = await UploadAndGetSecondSection(client);
         factory.Ai.Returns(AiResult.Ok("{}"), AiResult.Ok("{}"));
 
@@ -64,7 +64,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Create_when_ai_is_not_configured_returns_503()
     {
-        var client = factory.CreateClientAs(TestUser.Student);
+        var client = factory.CreateClientAs(TestUser.NewStudent());
         var section = await UploadAndGetSecondSection(client);
         factory.Ai.Returns(AiResult.Fail(ErrorCodes.AiNotConfigured));
 
@@ -77,7 +77,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Create_with_bad_difficulty_returns_400()
     {
-        var response = await factory.CreateClientAs(TestUser.Student)
+        var response = await factory.CreateClientAs(TestUser.NewStudent())
             .PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(Guid.NewGuid(), "extreme", Counts));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -87,26 +87,24 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Create_for_unknown_section_returns_404()
     {
-        var response = await factory.CreateClientAs(TestUser.Student)
+        var response = await factory.CreateClientAs(TestUser.NewStudent())
             .PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(Guid.NewGuid(), "easy", Counts));
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal(ErrorCodes.NotFound, await ErrorCode(response));
     }
 
-    private static TestUser NewStudent() => new(Guid.NewGuid().ToString(), [Studeo.Api.Auth.Roles.Student]);
-
     [Fact]
     public async Task List_returns_own_study_sets_with_their_pdf_and_section()
     {
-        var client = factory.CreateClientAs(NewStudent());
+        var client = factory.CreateClientAs(TestUser.NewStudent());
         var section = await UploadAndGetSecondSection(client);
         factory.Ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3))));
         var created = await (await client.PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(section.Id, "hard", Counts)))
             .Content.ReadFromJsonAsync<StudySetResponse>();
 
         var mine = await client.GetFromJsonAsync<List<StudySetSummaryResponse>>("/api/study-sets");
-        var others = await factory.CreateClientAs(NewStudent()).GetFromJsonAsync<List<StudySetSummaryResponse>>("/api/study-sets");
+        var others = await factory.CreateClientAs(TestUser.NewStudent()).GetFromJsonAsync<List<StudySetSummaryResponse>>("/api/study-sets");
         var documents = await client.GetFromJsonAsync<List<DocumentSummaryResponse>>("/api/documents");
 
         var item = Assert.Single(mine!);
@@ -120,12 +118,12 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Someone_elses_study_set_and_section_return_404()
     {
-        var owner = factory.CreateClientAs(NewStudent());
+        var owner = factory.CreateClientAs(TestUser.NewStudent());
         var section = await UploadAndGetSecondSection(owner);
         factory.Ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3))));
         var created = await (await owner.PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(section.Id, "easy", Counts)))
             .Content.ReadFromJsonAsync<StudySetResponse>();
-        var other = factory.CreateClientAs(NewStudent());
+        var other = factory.CreateClientAs(TestUser.NewStudent());
 
         var get = await other.GetAsync($"/api/study-sets/{created!.Id}");
         var create = await other.PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(section.Id, "easy", Counts));
@@ -138,7 +136,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Named_material_can_be_renamed_and_keeps_its_pdf()
     {
-        var client = factory.CreateClientAs(NewStudent());
+        var client = factory.CreateClientAs(TestUser.NewStudent());
         var section = await UploadAndGetSecondSection(client);
         factory.Ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3))));
         var created = await (await client.PostAsJsonAsync("/api/study-sets",
@@ -161,7 +159,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Rename_rejects_empty_names_and_other_users()
     {
-        var owner = factory.CreateClientAs(NewStudent());
+        var owner = factory.CreateClientAs(TestUser.NewStudent());
         var section = await UploadAndGetSecondSection(owner);
         factory.Ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3))));
         var created = await (await owner.PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(section.Id, "easy", Counts)))
@@ -169,7 +167,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
 
         var empty = await owner.PatchAsJsonAsync($"/api/study-sets/{created!.Id}", new RenameStudySetRequest("   "));
         var tooLong = await owner.PatchAsJsonAsync($"/api/study-sets/{created.Id}", new RenameStudySetRequest(new string('α', 121)));
-        var someoneElse = await factory.CreateClientAs(NewStudent())
+        var someoneElse = await factory.CreateClientAs(TestUser.NewStudent())
             .PatchAsJsonAsync($"/api/study-sets/{created.Id}", new RenameStudySetRequest("Δικό μου"));
 
         Assert.Equal(HttpStatusCode.BadRequest, empty.StatusCode);
@@ -181,7 +179,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Create_with_too_long_name_returns_400()
     {
-        var response = await factory.CreateClientAs(TestUser.Student)
+        var response = await factory.CreateClientAs(TestUser.NewStudent())
             .PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(Guid.NewGuid(), "easy", Counts, Name: new string('α', 121)));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -190,7 +188,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Get_unknown_returns_404()
     {
-        var response = await factory.CreateClientAs(TestUser.Student).GetAsync($"/api/study-sets/{Guid.NewGuid()}");
+        var response = await factory.CreateClientAs(TestUser.NewStudent()).GetAsync($"/api/study-sets/{Guid.NewGuid()}");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }

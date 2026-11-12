@@ -32,7 +32,7 @@ public class StudySetStreamTests(StudeoApiFactory factory) : IClassFixture<Stude
     [Fact]
     public async Task Streams_progress_then_the_saved_study_set()
     {
-        var client = factory.CreateClientAs(TestUser.Teacher);
+        var client = factory.CreateClientAs(TestUser.NewTeacher());
         var section = await UploadAndGetSecondSection(client);
         factory.Ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3))));
 
@@ -58,7 +58,7 @@ public class StudySetStreamTests(StudeoApiFactory factory) : IClassFixture<Stude
     [Fact]
     public async Task Ai_failure_ends_the_stream_with_an_error_event()
     {
-        var client = factory.CreateClientAs(TestUser.Student);
+        var client = factory.CreateClientAs(TestUser.NewStudent());
         var section = await UploadAndGetSecondSection(client);
         factory.Ai.Returns(AiResult.Fail(ErrorCodes.AiBusy));
 
@@ -72,7 +72,7 @@ public class StudySetStreamTests(StudeoApiFactory factory) : IClassFixture<Stude
     [Fact]
     public async Task Unknown_section_ends_with_not_found()
     {
-        var response = await factory.CreateClientAs(TestUser.Student)
+        var response = await factory.CreateClientAs(TestUser.NewStudent())
             .PostAsJsonAsync("/api/study-sets/stream", new CreateStudySetRequest(Guid.NewGuid(), "easy", Counts));
 
         var events = await Events(response);
@@ -82,7 +82,7 @@ public class StudySetStreamTests(StudeoApiFactory factory) : IClassFixture<Stude
     [Fact]
     public async Task Invalid_request_gets_a_plain_400()
     {
-        var response = await factory.CreateClientAs(TestUser.Student)
+        var response = await factory.CreateClientAs(TestUser.NewStudent())
             .PostAsJsonAsync("/api/study-sets/stream", new CreateStudySetRequest(Guid.NewGuid(), "impossible", Counts));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);

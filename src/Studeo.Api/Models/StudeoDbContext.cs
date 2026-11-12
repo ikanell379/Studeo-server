@@ -5,6 +5,7 @@ namespace Studeo.Api.Models;
 
 public class StudeoDbContext(DbContextOptions<StudeoDbContext> options) : DbContext(options)
 {
+    public DbSet<Course> Courses => Set<Course>();
     public DbSet<Document> Documents => Set<Document>();
     public DbSet<DocumentPage> DocumentPages => Set<DocumentPage>();
     public DbSet<Section> Sections => Set<Section>();
@@ -12,11 +13,25 @@ public class StudeoDbContext(DbContextOptions<StudeoDbContext> options) : DbCont
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<Course>(e =>
+        {
+            e.Property(c => c.OwnerId).HasMaxLength(64);
+            e.Property(c => c.Name).HasMaxLength(CourseLimits.MaxNameLength);
+            e.HasIndex(c => new { c.OwnerId, c.Name });
+        });
+
         modelBuilder.Entity<Document>(e =>
         {
             e.Property(d => d.FileName).HasMaxLength(260);
             e.Property(d => d.OwnerId).HasMaxLength(64);
+            e.Property(d => d.ContentHash).HasMaxLength(64);
             e.HasIndex(d => new { d.OwnerId, d.UploadedAt });
+            e.Property(d => d.TextHash).HasMaxLength(64);
+            e.HasIndex(d => new { d.OwnerId, d.ContentHash });
+            e.HasIndex(d => new { d.OwnerId, d.TextHash });
+            // Deleting a course deletes its PDFs, and with them their pages, sections and quizzes.
+            e.HasOne(d => d.Course).WithMany(c => c.Documents)
+                .HasForeignKey(d => d.CourseId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<DocumentPage>(e =>

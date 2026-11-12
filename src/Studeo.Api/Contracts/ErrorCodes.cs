@@ -14,10 +14,22 @@ public static class ErrorCodes
     public const string TooManyPages = "too_many_pages";
     public const string NoText = "no_text";
     public const string NotFound = "not_found";
+
+    /// <summary>
+    /// The user already uploaded this exact PDF. The 409 response has the stored one as "document"
+    /// (a DocumentResponse), so the UI can tell them where it is and open it.
+    /// </summary>
+    public const string DuplicateDocument = "duplicate_document";
+
+    /// <summary>The user already has a course with this name.</summary>
+    public const string CourseExists = "course_exists";
     public const string InvalidRequest = "invalid_request";
     public const string AiNotConfigured = "ai_not_configured";
     public const string AiFailed = "ai_failed";
     public const string AiBusy = "ai_busy";
+
+    /// <summary>The AI service's daily limit is used up (e.g. Gemini free tier); it resets the next day.</summary>
+    public const string AiQuota = "ai_quota";
     public const string AiInvalidOutput = "ai_invalid_output";
     public const string AiRefused = "ai_refused";
 

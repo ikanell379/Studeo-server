@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Studeo.Api.Contracts;
 using Studeo.Api.Models;
+using Studeo.Api.Services;
 
 namespace Studeo.Tests.Integration;
 
@@ -27,7 +28,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Upload_greek_pdf_stores_text_per_page()
     {
-        var client = factory.CreateClientAs(TestUser.Student);
+        var client = factory.CreateClientAs(TestUser.NewStudent());
 
         var response = await client.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "biology-el.pdf"));
 
@@ -48,7 +49,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Get_returns_uploaded_document()
     {
-        var client = factory.CreateClientAs(TestUser.Student);
+        var client = factory.CreateClientAs(TestUser.NewStudent());
         var created = await (await client.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "bio.pdf")))
             .Content.ReadFromJsonAsync<DocumentResponse>();
 
@@ -61,7 +62,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Get_sections_returns_chapters_of_uploaded_pdf()
     {
-        var client = factory.CreateClientAs(TestUser.Student);
+        var client = factory.CreateClientAs(TestUser.NewStudent());
         var created = await (await client.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "bio.pdf")))
             .Content.ReadFromJsonAsync<DocumentResponse>();
 
@@ -77,42 +78,191 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
             sections.Select(s => (s.Order, s.Title, s.StartPage, s.EndPage, s.IsWholeDocument)));
         Assert.Equal(sections[1].WordCount + sections[2].WordCount, sections[0].WordCount);
         Assert.All(sections, s => Assert.True(s.WordCount > 0));
+        Assert.All(sections, s => Assert.Empty(s.UnreadablePages)); // a clean PDF
     }
 
     [Fact]
     public async Task Get_sections_of_unknown_document_returns_404()
     {
-        var response = await factory.CreateClientAs(TestUser.Student).GetAsync($"/api/documents/{Guid.NewGuid()}/sections");
+        var response = await factory.CreateClientAs(TestUser.NewStudent()).GetAsync($"/api/documents/{Guid.NewGuid()}/sections");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal(ErrorCodes.NotFound, await ErrorCode(response));
     }
 
-    /// <summary>A user with no documents yet, so lists only show what the test made.</summary>
-    private static TestUser NewStudent() => new(Guid.NewGuid().ToString(), [Studeo.Api.Auth.Roles.Student]);
 
     [Fact]
     public async Task List_returns_only_own_documents_newest_first()
     {
-        var maria = factory.CreateClientAs(NewStudent());
-        var other = factory.CreateClientAs(NewStudent());
+        var maria = factory.CreateClientAs(TestUser.NewStudent());
+        var other = factory.CreateClientAs(TestUser.NewStudent());
         await maria.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "first.pdf"));
-        await maria.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "second.pdf"));
+        await maria.PostAsync("/api/documents", Form(TestPdfs.Build(TestPdfs.LongSentence, TestPdfs.LongSentence), "second.pdf"));
         await other.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "not-mine.pdf"));
 
         var list = await maria.GetFromJsonAsync<List<DocumentSummaryResponse>>("/api/documents");
 
-        Assert.Equal(["second.pdf", "first.pdf"], list!.Select(d => d.FileName));
-        Assert.All(list!, d => Assert.Equal((4, 0), (d.PageCount, d.StudySetCount)));
+        Assert.Equal([("second.pdf", 2), ("first.pdf", 4)], list!.Select(d => (d.FileName, d.PageCount)));
+        Assert.All(list!, d => Assert.Equal((0, (Guid?)null), (d.StudySetCount, d.CourseId)));
+    }
+
+    [Fact]
+    public async Task Uploading_the_same_pdf_again_returns_409_with_the_stored_one()
+    {
+        var client = factory.CreateClientAs(TestUser.NewStudent());
+        var first = await (await client.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "bio.pdf")))
+            .Content.ReadFromJsonAsync<DocumentResponse>();
+
+        // Same bytes under another name: still the same PDF.
+        var again = await client.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "bio (1).pdf"));
+
+        Assert.Equal(HttpStatusCode.Conflict, again.StatusCode);
+        using var json = JsonDocument.Parse(await again.Content.ReadAsStringAsync());
+        Assert.Equal(ErrorCodes.DuplicateDocument, json.RootElement.GetProperty("code").GetString());
+        var existing = json.RootElement.GetProperty("document");
+        Assert.Equal(first!.Id, existing.GetProperty("id").GetGuid());
+        Assert.Equal("bio.pdf", existing.GetProperty("fileName").GetString());
+
+        var list = await client.GetFromJsonAsync<List<DocumentSummaryResponse>>("/api/documents");
+        Assert.Single(list!);
+    }
+
+    [Fact]
+    public async Task Delete_removes_the_pdf_with_its_pages_sections_and_quizzes()
+    {
+        var client = factory.CreateClientAs(TestUser.NewStudent());
+        var document = await (await client.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "bio.pdf")))
+            .Content.ReadFromJsonAsync<DocumentResponse>();
+        var sections = await client.GetFromJsonAsync<List<SectionResponse>>($"/api/documents/{document!.Id}/sections");
+        var section = sections!.Single(s => s.Title == "Κεφάλαιο 2: Η φωτοσύνθεση");
+        var counts = TestStudySets.SmallCounts;
+        factory.Ai.Returns(Studeo.Api.Services.AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(counts, page: 3))));
+        var created = await client.PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(section.Id, "easy", counts));
+        var studySet = await created.Content.ReadFromJsonAsync<StudySetResponse>();
+
+        var response = await client.DeleteAsync($"/api/documents/{document.Id}");
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/documents/{document.Id}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/study-sets/{studySet!.Id}")).StatusCode);
+        Assert.Empty((await client.GetFromJsonAsync<List<StudySetSummaryResponse>>("/api/study-sets"))!);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<StudeoDbContext>();
+            Assert.False(await db.DocumentPages.AnyAsync(p => p.DocumentId == document.Id));
+            Assert.False(await db.Sections.AnyAsync(s => s.DocumentId == document.Id));
+            Assert.False(await db.StudySets.AnyAsync(s => s.Id == studySet.Id));
+        }
+
+        // Gone for good, so the same file is no longer a duplicate.
+        var again = await client.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "bio.pdf"));
+        Assert.Equal(HttpStatusCode.Created, again.StatusCode);
+    }
+
+    [Fact]
+    public async Task Delete_someone_elses_or_unknown_pdf_returns_404()
+    {
+        var owner = factory.CreateClientAs(TestUser.NewStudent());
+        var document = await (await owner.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "bio.pdf")))
+            .Content.ReadFromJsonAsync<DocumentResponse>();
+        var other = factory.CreateClientAs(TestUser.NewStudent());
+
+        Assert.Equal(HttpStatusCode.NotFound, (await other.DeleteAsync($"/api/documents/{document!.Id}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await other.DeleteAsync($"/api/documents/{Guid.NewGuid()}")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await owner.GetAsync($"/api/documents/{document.Id}")).StatusCode);
+    }
+
+    [Fact]
+    public async Task A_pdf_stored_before_file_hashes_is_still_found_by_its_text()
+    {
+        var client = factory.CreateClientAs(TestUser.NewStudent());
+        var old = await (await client.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "old.pdf")))
+            .Content.ReadFromJsonAsync<DocumentResponse>();
+        string expected;
+        using (var scope = factory.Services.CreateScope())
+        {
+            // Make it look like a PDF from before: no hashes. The migration's backfill gives it its text hash.
+            var db = scope.ServiceProvider.GetRequiredService<StudeoDbContext>();
+            expected = DocumentHashes.TextHash(await db.DocumentPages.Where(p => p.DocumentId == old!.Id)
+                .OrderBy(p => p.PageNumber).Select(p => p.Text).ToListAsync());
+            await db.Documents.Where(d => d.Id == old!.Id)
+                .ExecuteUpdateAsync(s => s.SetProperty(d => d.ContentHash, (string?)null).SetProperty(d => d.TextHash, (string?)null));
+
+            await db.Database.ExecuteSqlRawAsync(DocumentHashes.BackfillTextHashSql);
+
+            var stored = await db.Documents.AsNoTracking().SingleAsync(d => d.Id == old!.Id);
+            Assert.Equal(expected, stored.TextHash); // the SQL and the C# fingerprint agree
+        }
+
+        var again = await client.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "again.pdf"));
+
+        Assert.Equal(HttpStatusCode.Conflict, again.StatusCode);
+        Assert.Equal(ErrorCodes.DuplicateDocument, await ErrorCode(again));
+    }
+
+    [Fact]
+    public async Task Another_user_can_upload_the_same_pdf()
+    {
+        await factory.CreateClientAs(TestUser.NewStudent()).PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "bio.pdf"));
+
+        var response = await factory.CreateClientAs(TestUser.NewStudent())
+            .PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "bio.pdf"));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Upload_into_a_course_and_move_between_courses()
+    {
+        var client = factory.CreateClientAs(TestUser.NewStudent());
+        var biology = await (await client.PostAsJsonAsync("/api/courses", new CourseNameRequest("Βιολογία")))
+            .Content.ReadFromJsonAsync<CourseResponse>();
+        var chemistry = await (await client.PostAsJsonAsync("/api/courses", new CourseNameRequest("Χημεία")))
+            .Content.ReadFromJsonAsync<CourseResponse>();
+
+        var form = Form(TestPdfs.GreekSample(), "bio.pdf");
+        form.Add(new StringContent(biology!.Id.ToString()), "courseId");
+        var uploaded = await (await client.PostAsync("/api/documents", form)).Content.ReadFromJsonAsync<DocumentResponse>();
+        Assert.Equal(biology.Id, uploaded!.CourseId);
+
+        var moved = await client.PutAsJsonAsync($"/api/documents/{uploaded.Id}/course", new MoveDocumentRequest(chemistry!.Id));
+        Assert.Equal(HttpStatusCode.OK, moved.StatusCode);
+        Assert.Equal(chemistry.Id, (await moved.Content.ReadFromJsonAsync<DocumentResponse>())!.CourseId);
+
+        var courses = await client.GetFromJsonAsync<List<CourseResponse>>("/api/courses");
+        Assert.Equal([("Βιολογία", 0), ("Χημεία", 1)], courses!.Select(c => (c.Name, c.DocumentCount)));
+
+        var out_ = await client.PutAsJsonAsync($"/api/documents/{uploaded.Id}/course", new MoveDocumentRequest(null));
+        Assert.Null((await out_.Content.ReadFromJsonAsync<DocumentResponse>())!.CourseId);
+    }
+
+    [Fact]
+    public async Task Someone_elses_course_returns_404_on_upload_and_move()
+    {
+        var other = factory.CreateClientAs(TestUser.NewStudent());
+        var theirs = await (await other.PostAsJsonAsync("/api/courses", new CourseNameRequest("Ιστορία")))
+            .Content.ReadFromJsonAsync<CourseResponse>();
+        var client = factory.CreateClientAs(TestUser.NewStudent());
+
+        var form = Form(TestPdfs.GreekSample(), "bio.pdf");
+        form.Add(new StringContent(theirs!.Id.ToString()), "courseId");
+        var upload = await client.PostAsync("/api/documents", form);
+        Assert.Equal(HttpStatusCode.NotFound, upload.StatusCode);
+
+        var mine = await (await client.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "bio.pdf")))
+            .Content.ReadFromJsonAsync<DocumentResponse>();
+        var move = await client.PutAsJsonAsync($"/api/documents/{mine!.Id}/course", new MoveDocumentRequest(theirs.Id));
+        Assert.Equal(HttpStatusCode.NotFound, move.StatusCode);
     }
 
     [Fact]
     public async Task Someone_elses_document_returns_404()
     {
-        var owner = factory.CreateClientAs(NewStudent());
+        var owner = factory.CreateClientAs(TestUser.NewStudent());
         var created = await (await owner.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "bio.pdf")))
             .Content.ReadFromJsonAsync<DocumentResponse>();
-        var other = factory.CreateClientAs(NewStudent());
+        var other = factory.CreateClientAs(TestUser.NewStudent());
 
         var document = await other.GetAsync($"/api/documents/{created!.Id}");
         var sections = await other.GetAsync($"/api/documents/{created.Id}/sections");
@@ -124,7 +274,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Get_unknown_document_returns_404()
     {
-        var response = await factory.CreateClientAs(TestUser.Student).GetAsync($"/api/documents/{Guid.NewGuid()}");
+        var response = await factory.CreateClientAs(TestUser.NewStudent()).GetAsync($"/api/documents/{Guid.NewGuid()}");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal(ErrorCodes.NotFound, await ErrorCode(response));
@@ -133,7 +283,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Upload_without_file_returns_file_missing()
     {
-        var response = await factory.CreateClientAs(TestUser.Student).PostAsync("/api/documents", new MultipartFormDataContent { { new StringContent("x"), "other" } });
+        var response = await factory.CreateClientAs(TestUser.NewStudent()).PostAsync("/api/documents", new MultipartFormDataContent { { new StringContent("x"), "other" } });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(ErrorCodes.FileMissing, await ErrorCode(response));
@@ -142,7 +292,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Upload_non_pdf_extension_returns_not_pdf()
     {
-        var response = await factory.CreateClientAs(TestUser.Student).PostAsync("/api/documents", Form("hello"u8.ToArray(), "notes.txt", "text/plain"));
+        var response = await factory.CreateClientAs(TestUser.NewStudent()).PostAsync("/api/documents", Form("hello"u8.ToArray(), "notes.txt", "text/plain"));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(ErrorCodes.NotPdf, await ErrorCode(response));
@@ -151,7 +301,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Upload_fake_pdf_returns_invalid_pdf()
     {
-        var response = await factory.CreateClientAs(TestUser.Student).PostAsync("/api/documents", Form("not really a pdf"u8.ToArray(), "fake.pdf"));
+        var response = await factory.CreateClientAs(TestUser.NewStudent()).PostAsync("/api/documents", Form("not really a pdf"u8.ToArray(), "fake.pdf"));
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
         Assert.Equal(ErrorCodes.InvalidPdf, await ErrorCode(response));
@@ -160,7 +310,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Upload_scanned_pdf_returns_no_text()
     {
-        var response = await factory.CreateClientAs(TestUser.Student).PostAsync("/api/documents", Form(TestPdfs.BlankPages(3), "scan.pdf"));
+        var response = await factory.CreateClientAs(TestUser.NewStudent()).PostAsync("/api/documents", Form(TestPdfs.BlankPages(3), "scan.pdf"));
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
         Assert.Equal(ErrorCodes.NoText, await ErrorCode(response));
@@ -169,7 +319,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Upload_more_than_50_pages_returns_too_many_pages()
     {
-        var response = await factory.CreateClientAs(TestUser.Student).PostAsync("/api/documents", Form(TestPdfs.BlankPages(51), "big.pdf"));
+        var response = await factory.CreateClientAs(TestUser.NewStudent()).PostAsync("/api/documents", Form(TestPdfs.BlankPages(51), "big.pdf"));
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
         Assert.Equal(ErrorCodes.TooManyPages, await ErrorCode(response));
