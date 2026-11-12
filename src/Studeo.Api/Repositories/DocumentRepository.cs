@@ -25,4 +25,13 @@ public class DocumentRepository(StudeoDbContext db) : IDocumentRepository
             .Where(s => s.DocumentId == documentId)
             .OrderBy(s => s.Order)
             .ToListAsync(ct);
+
+    public Task<Section?> GetSectionAsync(Guid sectionId, CancellationToken ct) =>
+        db.Sections.AsNoTracking().FirstOrDefaultAsync(s => s.Id == sectionId, ct);
+
+    public async Task<IReadOnlyList<DocumentPage>> GetPagesAsync(Guid documentId, int fromPage, int toPage, CancellationToken ct) =>
+        await db.DocumentPages.AsNoTracking()
+            .Where(p => p.DocumentId == documentId && p.PageNumber >= fromPage && p.PageNumber <= toPage)
+            .OrderBy(p => p.PageNumber)
+            .ToListAsync(ct);
 }

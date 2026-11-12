@@ -14,4 +14,10 @@ public static class ErrorCodes
     public const string TooManyPages = "too_many_pages";
     public const string NoText = "no_text";
     public const string NotFound = "not_found";
+    public const string InvalidRequest = "invalid_request";
+    public const string AiNotConfigured = "ai_not_configured";
+    public const string AiFailed = "ai_failed";
+    public const string AiBusy = "ai_busy";
+    public const string AiInvalidOutput = "ai_invalid_output";
+    public const string AiRefused = "ai_refused";
 }

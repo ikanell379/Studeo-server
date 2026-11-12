@@ -30,6 +30,7 @@ Studeo-server/
 ## Configuration and Secrets
 - Never put connection strings, keys or any settings in `appsettings.json`. Settings go only in `appsettings.Development.json`.
 - Anthropic key only in user-secrets: `dotnet user-secrets set "Anthropic:ApiKey" "<key>" --project src/Studeo.Api`
+- AI provider: `"Ai:Provider"` in `appsettings.Development.json` is `Claude` (default) or `Gemini`. Gemini uses `Gemini:Model` and `Gemini:ApiKey` (recommended in user-secrets too: `dotnet user-secrets set "Gemini:ApiKey" "<key>" --project src/Studeo.Api`).
 
 ## Running
 - Database: `docker compose up -d` (PostgreSQL 17 on `localhost:5440`)

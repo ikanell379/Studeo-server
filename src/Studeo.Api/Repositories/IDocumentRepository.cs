@@ -12,4 +12,9 @@ public interface IDocumentRepository
     Task<IReadOnlyList<DocumentPage>> GetPagesAsync(Guid documentId, CancellationToken ct);
 
     Task<IReadOnlyList<Section>> GetSectionsAsync(Guid documentId, CancellationToken ct);
+
+    Task<Section?> GetSectionAsync(Guid sectionId, CancellationToken ct);
+
+    /// <summary>Pages fromPage..toPage (inclusive) of a document, in order.</summary>
+    Task<IReadOnlyList<DocumentPage>> GetPagesAsync(Guid documentId, int fromPage, int toPage, CancellationToken ct);
 }

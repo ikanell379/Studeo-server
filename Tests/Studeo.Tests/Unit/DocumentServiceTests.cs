@@ -30,6 +30,11 @@ public class DocumentServiceTests
 
         public Task<IReadOnlyList<Section>> GetSectionsAsync(Guid documentId, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<Section>>(Added.Single(d => d.Id == documentId).Sections);
+
+        public Task<Section?> GetSectionAsync(Guid sectionId, CancellationToken ct) => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<DocumentPage>> GetPagesAsync(Guid documentId, int fromPage, int toPage, CancellationToken ct) =>
+            throw new NotSupportedException();
     }
 
     private static readonly string TextPage = new('α', DocumentLimits.MinLettersPerPage);

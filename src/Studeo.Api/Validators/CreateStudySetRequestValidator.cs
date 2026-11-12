@@ -1,0 +1,32 @@
+using FluentValidation;
+using Studeo.Api.Contracts;
+
+namespace Studeo.Api.Validators;
+
+public class CreateStudySetRequestValidator : AbstractValidator<CreateStudySetRequest>
+{
+    public CreateStudySetRequestValidator()
+    {
+        RuleFor(r => r.SectionId).NotEmpty().WithErrorCode(ErrorCodes.InvalidRequest);
+
+        RuleFor(r => r.Difficulty)
+            .Must(d => StudySetLimits.Difficulties.Contains(d)).WithErrorCode(ErrorCodes.InvalidRequest)
+            .WithMessage("Difficulty must be easy, medium or hard.");
+
+        RuleFor(r => r.Counts)
+            .NotNull().WithErrorCode(ErrorCodes.InvalidRequest)
+            .DependentRules(() =>
+            {
+                RuleFor(r => r.Counts)
+                    .Must(c => Values(c).All(v => v is >= 0 and <= StudySetLimits.MaxPerType))
+                    .WithErrorCode(ErrorCodes.InvalidRequest)
+                    .WithMessage($"Each count must be between 0 and {StudySetLimits.MaxPerType}.")
+                    .Must(c => Values(c).Sum() > 0)
+                    .WithErrorCode(ErrorCodes.InvalidRequest)
+                    .WithMessage("Ask for at least one item.");
+            });
+    }
+
+    private static int[] Values(QuestionCounts c) =>
+        [c.Theory, c.OpenQuestions, c.TrueFalse, c.Matching, c.MultipleChoice, c.FillBlanks];
+}
