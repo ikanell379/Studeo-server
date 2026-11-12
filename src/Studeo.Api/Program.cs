@@ -1,5 +1,6 @@
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
+using Studeo.Api.Auth;
 using Studeo.Api.Models;
 using Studeo.Api.Repositories;
 using Studeo.Api.Services;
@@ -11,6 +12,7 @@ var connectionString = builder.Configuration.GetConnectionString("Studeo")
 
 builder.Services.AddDbContext<StudeoDbContext>(o => o.UseNpgsql(connectionString));
 
+builder.Services.AddKeycloakAuth(builder.Configuration, builder.Environment.IsDevelopment());
 builder.Services.AddControllers();
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddEndpointsApiExplorer();
@@ -30,6 +32,8 @@ builder.Services.AddSingleton<ISectioner, Sectioner>();
 builder.Services.AddScoped<IDocumentService, DocumentService>();
 builder.Services.AddAiClient(builder.Configuration); // "Ai:Provider": Claude | Gemini
 builder.Services.AddScoped<IStudySetService, StudySetService>();
+builder.Services.AddHttpClient<IKeycloakClient, KeycloakClient>();
+builder.Services.AddScoped<IAuthService, AuthService>();
 
 var app = builder.Build();
 
@@ -45,6 +49,9 @@ else
 {
     app.UseHttpsRedirection();
 }
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapControllers();
 

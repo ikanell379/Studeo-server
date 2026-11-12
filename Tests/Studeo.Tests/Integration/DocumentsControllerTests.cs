@@ -27,7 +27,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Upload_greek_pdf_stores_text_per_page()
     {
-        var client = factory.CreateClient();
+        var client = factory.CreateClientAs(TestUser.Student);
 
         var response = await client.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "biology-el.pdf"));
 
@@ -48,7 +48,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Get_returns_uploaded_document()
     {
-        var client = factory.CreateClient();
+        var client = factory.CreateClientAs(TestUser.Student);
         var created = await (await client.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "bio.pdf")))
             .Content.ReadFromJsonAsync<DocumentResponse>();
 
@@ -61,7 +61,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Get_sections_returns_chapters_of_uploaded_pdf()
     {
-        var client = factory.CreateClient();
+        var client = factory.CreateClientAs(TestUser.Student);
         var created = await (await client.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "bio.pdf")))
             .Content.ReadFromJsonAsync<DocumentResponse>();
 
@@ -77,7 +77,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Get_sections_of_unknown_document_returns_404()
     {
-        var response = await factory.CreateClient().GetAsync($"/api/documents/{Guid.NewGuid()}/sections");
+        var response = await factory.CreateClientAs(TestUser.Student).GetAsync($"/api/documents/{Guid.NewGuid()}/sections");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal(ErrorCodes.NotFound, await ErrorCode(response));
@@ -86,7 +86,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Get_unknown_document_returns_404()
     {
-        var response = await factory.CreateClient().GetAsync($"/api/documents/{Guid.NewGuid()}");
+        var response = await factory.CreateClientAs(TestUser.Student).GetAsync($"/api/documents/{Guid.NewGuid()}");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal(ErrorCodes.NotFound, await ErrorCode(response));
@@ -95,7 +95,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Upload_without_file_returns_file_missing()
     {
-        var response = await factory.CreateClient().PostAsync("/api/documents", new MultipartFormDataContent { { new StringContent("x"), "other" } });
+        var response = await factory.CreateClientAs(TestUser.Student).PostAsync("/api/documents", new MultipartFormDataContent { { new StringContent("x"), "other" } });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(ErrorCodes.FileMissing, await ErrorCode(response));
@@ -104,7 +104,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Upload_non_pdf_extension_returns_not_pdf()
     {
-        var response = await factory.CreateClient().PostAsync("/api/documents", Form("hello"u8.ToArray(), "notes.txt", "text/plain"));
+        var response = await factory.CreateClientAs(TestUser.Student).PostAsync("/api/documents", Form("hello"u8.ToArray(), "notes.txt", "text/plain"));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(ErrorCodes.NotPdf, await ErrorCode(response));
@@ -113,7 +113,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Upload_fake_pdf_returns_invalid_pdf()
     {
-        var response = await factory.CreateClient().PostAsync("/api/documents", Form("not really a pdf"u8.ToArray(), "fake.pdf"));
+        var response = await factory.CreateClientAs(TestUser.Student).PostAsync("/api/documents", Form("not really a pdf"u8.ToArray(), "fake.pdf"));
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
         Assert.Equal(ErrorCodes.InvalidPdf, await ErrorCode(response));
@@ -122,7 +122,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Upload_scanned_pdf_returns_no_text()
     {
-        var response = await factory.CreateClient().PostAsync("/api/documents", Form(TestPdfs.BlankPages(3), "scan.pdf"));
+        var response = await factory.CreateClientAs(TestUser.Student).PostAsync("/api/documents", Form(TestPdfs.BlankPages(3), "scan.pdf"));
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
         Assert.Equal(ErrorCodes.NoText, await ErrorCode(response));
@@ -131,7 +131,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Upload_more_than_50_pages_returns_too_many_pages()
     {
-        var response = await factory.CreateClient().PostAsync("/api/documents", Form(TestPdfs.BlankPages(51), "big.pdf"));
+        var response = await factory.CreateClientAs(TestUser.Student).PostAsync("/api/documents", Form(TestPdfs.BlankPages(51), "big.pdf"));
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
         Assert.Equal(ErrorCodes.TooManyPages, await ErrorCode(response));

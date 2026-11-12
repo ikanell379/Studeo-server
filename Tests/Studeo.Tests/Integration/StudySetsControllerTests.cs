@@ -30,7 +30,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Create_generates_stores_and_get_returns_it()
     {
-        var client = factory.CreateClient();
+        var client = factory.CreateClientAs(TestUser.Student);
         var section = await UploadAndGetSecondSection(client);
         factory.Ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3))));
 
@@ -51,7 +51,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Create_with_invalid_ai_output_twice_returns_422()
     {
-        var client = factory.CreateClient();
+        var client = factory.CreateClientAs(TestUser.Student);
         var section = await UploadAndGetSecondSection(client);
         factory.Ai.Returns(AiResult.Ok("{}"), AiResult.Ok("{}"));
 
@@ -64,7 +64,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Create_when_ai_is_not_configured_returns_503()
     {
-        var client = factory.CreateClient();
+        var client = factory.CreateClientAs(TestUser.Student);
         var section = await UploadAndGetSecondSection(client);
         factory.Ai.Returns(AiResult.Fail(ErrorCodes.AiNotConfigured));
 
@@ -77,7 +77,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Create_with_bad_difficulty_returns_400()
     {
-        var response = await factory.CreateClient()
+        var response = await factory.CreateClientAs(TestUser.Student)
             .PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(Guid.NewGuid(), "extreme", Counts));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -87,7 +87,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Create_for_unknown_section_returns_404()
     {
-        var response = await factory.CreateClient()
+        var response = await factory.CreateClientAs(TestUser.Student)
             .PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(Guid.NewGuid(), "easy", Counts));
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
@@ -97,7 +97,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Get_unknown_returns_404()
     {
-        var response = await factory.CreateClient().GetAsync($"/api/study-sets/{Guid.NewGuid()}");
+        var response = await factory.CreateClientAs(TestUser.Student).GetAsync($"/api/study-sets/{Guid.NewGuid()}");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }

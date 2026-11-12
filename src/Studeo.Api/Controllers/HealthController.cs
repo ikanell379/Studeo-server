@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Studeo.Api.Contracts;
 using Studeo.Api.Services;
@@ -5,6 +6,7 @@ using Studeo.Api.Services;
 namespace Studeo.Api.Controllers;
 
 [ApiController]
+[AllowAnonymous]
 [Route("api/health")]
 public class HealthController(IHealthService healthService) : ControllerBase
 {

@@ -1,11 +1,14 @@
 using FluentValidation;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Studeo.Api.Auth;
 using Studeo.Api.Contracts;
 using Studeo.Api.Services;
 
 namespace Studeo.Api.Controllers;
 
 [ApiController]
+[Authorize(Roles = Roles.Any)]
 [Route("api/study-sets")]
 public class StudySetsController(
     IStudySetService studySetService,

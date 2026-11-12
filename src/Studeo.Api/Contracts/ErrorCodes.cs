@@ -20,4 +20,20 @@ public static class ErrorCodes
     public const string AiBusy = "ai_busy";
     public const string AiInvalidOutput = "ai_invalid_output";
     public const string AiRefused = "ai_refused";
+
+    /// <summary>Signed in, but the account has no Studeo role (teacher / student).</summary>
+    public const string NoRole = "no_role";
+
+    /// <summary>The auth provider (Keycloak) could not be reached.</summary>
+    public const string AuthFailed = "auth_failed";
+
+    public const string InvalidEmail = "invalid_email";
+    public const string WeakPassword = "weak_password";
+    public const string EmailTaken = "email_taken";
+
+    /// <summary>Wrong email or password (also: account locked after too many tries).</summary>
+    public const string InvalidCredentials = "invalid_credentials";
+
+    /// <summary>No session, or it has ended: sign in again.</summary>
+    public const string SessionExpired = "session_expired";
 }

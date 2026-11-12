@@ -1,0 +1,72 @@
+{
+  "realm": "studeo",
+  "enabled": true,
+  "displayName": "Studeo",
+  "registrationAllowed": false,
+  "registrationEmailAsUsername": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "verifyEmail": false,
+  "sslRequired": "external",
+  "passwordPolicy": "length(8)",
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 604800,
+  "ssoSessionMaxLifespan": 2592000,
+  "bruteForceProtected": true,
+  "failureFactor": 10,
+  "roles": {
+    "realm": [
+      {
+        "name": "student",
+        "description": "Μαθητής / Φοιτητής"
+      },
+      {
+        "name": "teacher",
+        "description": "Καθηγητής"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "studeo-api",
+      "name": "Studeo API",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "clientAuthenticatorType": "client-secret",
+      "secret": "studeo-api-dev-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "studeo-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "studeo-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-studeo-api",
+      "enabled": true,
+      "serviceAccountClientId": "studeo-api",
+      "clientRoles": {
+        "realm-management": [
+          "view-users",
+          "manage-users",
+          "view-realm"
+        ]
+      }
+    }
+  ]
+}
