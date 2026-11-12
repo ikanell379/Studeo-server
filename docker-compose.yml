@@ -1,0 +1,21 @@
+name: studeo
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: studeo
+      POSTGRES_USER: studeo
+      POSTGRES_PASSWORD: studeo_dev   # local development only
+    ports:
+      - "127.0.0.1:5440:5432"
+    volumes:
+      - studeo-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U studeo -d studeo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  studeo-db:
