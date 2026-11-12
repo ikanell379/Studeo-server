@@ -29,6 +29,18 @@ public class StudySetRepository(StudeoDbContext db) : IStudySetRepository
         return studySet;
     }
 
+    public async Task<StudySet?> UpdateContentAsync(Guid id, string ownerId, string content, DateTimeOffset now, CancellationToken ct)
+    {
+        var studySet = await db.StudySets.Include(s => s.Section)
+            .FirstOrDefaultAsync(s => s.Id == id && s.Section!.Document!.OwnerId == ownerId, ct);
+        if (studySet is null) return null;
+
+        studySet.Content = content;
+        studySet.UpdatedAt = now;
+        await db.SaveChangesAsync(ct);
+        return studySet;
+    }
+
     public async Task<IReadOnlyList<StudySetSummaryResponse>> ListAsync(string ownerId, CancellationToken ct) =>
         await db.StudySets.AsNoTracking()
             .Where(s => s.Section!.Document!.OwnerId == ownerId)

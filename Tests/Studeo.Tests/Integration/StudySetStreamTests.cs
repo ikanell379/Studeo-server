@@ -32,7 +32,7 @@ public class StudySetStreamTests(StudeoApiFactory factory) : IClassFixture<Stude
     [Fact]
     public async Task Streams_progress_then_the_saved_study_set()
     {
-        var client = factory.CreateClientAs(TestUser.NewTeacher());
+        var client = factory.CreateClientAs(TestUser.NewStudent());
         var section = await UploadAndGetSecondSection(client);
         factory.Ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3))));
 
@@ -53,6 +53,24 @@ public class StudySetStreamTests(StudeoApiFactory factory) : IClassFixture<Stude
         Assert.Equal(section.Id, done.StudySet!.SectionId);
         var stored = await client.GetFromJsonAsync<StudySetResponse>($"/api/study-sets/{done.StudySet.Id}");
         Assert.Equal(done.StudySet.Content.Theory.Select(t => t.Id), stored!.Content.Theory.Select(t => t.Id));
+    }
+
+    [Fact]
+    public async Task For_a_teacher_progress_includes_the_guide_and_the_result_has_it()
+    {
+        var client = factory.CreateClientAs(TestUser.NewTeacher());
+        var section = await UploadAndGetSecondSection(client);
+        factory.Ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3))));
+
+        var response = await client.PostAsJsonAsync("/api/study-sets/stream", new CreateStudySetRequest(section.Id, "easy", Counts));
+
+        var events = await Events(response);
+        var progress = events.Where(e => e.Type == "progress").Select(e => e.Progress!).ToList();
+        var total = StudySetService.TotalItems(Counts) + StudySetService.GuideProgressWeight;
+        Assert.Equal(GenerationProgress.Reading, progress[0].Stage);
+        Assert.All(progress, p => Assert.Equal(total, p.Total));
+        Assert.Equal(total, progress.Where(p => p.Stage == GenerationProgress.Writing).Max(p => p.Done));
+        Assert.NotNull(events[^1].StudySet!.Content.TeachingGuide);
     }
 
     [Fact]

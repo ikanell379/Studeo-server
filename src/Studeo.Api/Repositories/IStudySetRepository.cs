@@ -14,6 +14,9 @@ public interface IStudySetRepository
     /// <summary>Renames the owner's study set; returns it (with its Section), or null if they have no such set.</summary>
     Task<StudySet?> RenameAsync(Guid id, string ownerId, string name, DateTimeOffset now, CancellationToken ct);
 
+    /// <summary>Replaces the owner's study set content (jsonb); returns it (with its Section), or null.</summary>
+    Task<StudySet?> UpdateContentAsync(Guid id, string ownerId, string content, DateTimeOffset now, CancellationToken ct);
+
     /// <summary>All study sets made from the owner's documents, newest first.</summary>
     Task<IReadOnlyList<StudySetSummaryResponse>> ListAsync(string ownerId, CancellationToken ct);
 }

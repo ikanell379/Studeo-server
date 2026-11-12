@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Studeo.Api.Contracts;
+using Studeo.Api.Prompts;
 using Studeo.Api.Services;
 
 namespace Studeo.Tests;
@@ -36,6 +37,24 @@ public static class TestStudySets
             .Select(i => new FillBlankItem { Sentence = "Το ____ είναι οργανίδιο.", Answer = "μιτοχόνδριο", Page = page }).ToList(),
     };
 
+    /// <summary>A teaching guide that passes the check, every key point on <paramref name="page"/>.</summary>
+    public static TeachingGuide ValidGuide(int page = 1) => new()
+    {
+        Overview = "Η ενότητα εξηγεί τη φωτοσύνθεση.",
+        Objectives = ["Να εξηγούν τη φωτοσύνθεση.", "Να αναφέρουν τα προϊόντα της."],
+        Prerequisites = ["Το κύτταρο."],
+        LessonPlan =
+        [
+            new LessonStep { Title = "Αφόρμηση", Minutes = 5, Description = "Ερώτηση: από πού παίρνει ενέργεια το φυτό;" },
+            new LessonStep { Title = "Παρουσίαση", Minutes = 25, Description = "Σχήμα του χλωροπλάστη στον πίνακα." },
+            new LessonStep { Title = "Ανακεφαλαίωση", Minutes = 15, Description = "Σύντομο κουίζ." },
+        ],
+        KeyPoints = Enumerable.Range(1, 3)
+            .Select(i => new TeachingPoint { Point = $"Σημείο {i}", HowToTeach = "Με παράδειγμα.", Page = page }).ToList(),
+        Misconceptions = [new Misconception { Mistake = "Τα φυτά τρώνε χώμα.", Correction = "Φτιάχνουν τροφή με το φως." }],
+        DiscussionQuestions = ["Τι θα γινόταν χωρίς φως;"],
+    };
+
     /// <summary>The amounts a generation prompt asks for ("- theory: 4" …).</summary>
     public static QuestionCounts AskedCounts(string userPrompt)
     {
@@ -64,12 +83,19 @@ public class FakeAiClient : IAiClient
     /// <summary>Every call (system, user prompt). Parts of a large request call in parallel, so the order may vary.</summary>
     public List<(string System, string User)> Calls { get; } = [];
 
+    /// <summary>Teaching guide calls (kept apart, so tests of the questions see only their own calls).</summary>
+    public List<string> GuideCalls { get; } = [];
+
+    /// <summary>The answer to a teaching guide call: a valid guide (page 3) unless a test sets another.</summary>
+    public Func<AiResult> Guide { get; set; } = () => AiResult.Ok(JsonSerializer.Serialize(TestStudySets.ValidGuide(3), StudySetJson.Options));
+
     public FakeAiClient Returns(params AiResult[] results)
     {
         lock (_gate)
         {
             _results.Clear();
             Calls.Clear();
+            GuideCalls.Clear();
             _answer = null;
             foreach (var r in results)
             {
@@ -86,6 +112,7 @@ public class FakeAiClient : IAiClient
         {
             _results.Clear();
             Calls.Clear();
+            GuideCalls.Clear();
             _answer = answer;
         }
         return this;
@@ -103,6 +130,11 @@ public class FakeAiClient : IAiClient
         AiResult result;
         lock (_gate)
         {
+            if (system == TeachingGuidePrompt.System)
+            {
+                GuideCalls.Add(user);
+                return Task.FromResult(Guide());
+            }
             Calls.Add((system, user));
             result = _answer is not null ? _answer(user)
                 : _results.Count > 0 ? _results.Dequeue()

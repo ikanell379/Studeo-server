@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using Studeo.Api.Auth;
 using Studeo.Api.Contracts;
 using Studeo.Api.Services;
+using Studeo.Api.Services.Export;
 
 namespace Studeo.Api.Controllers;
 
@@ -17,6 +18,8 @@ public class StudySetsController(
     IStudySetService studySetService,
     IValidator<CreateStudySetRequest> createValidator,
     IValidator<RenameStudySetRequest> renameValidator,
+    IValidator<ExportTestRequest> exportValidator,
+    ITestExportService exportService,
     ILogger<StudySetsController> logger) : ControllerBase
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -37,7 +40,7 @@ public class StudySetsController(
             return Error(StatusCodes.Status400BadRequest, ErrorCodes.InvalidRequest, first.ErrorMessage);
         }
 
-        var result = await studySetService.CreateAsync(request, User.UserId(), null, ct);
+        var result = await studySetService.CreateAsync(request, User.UserId(), IsTeacher, null, ct);
         if (result.ErrorCode is not null)
         {
             return Error(StatusFor(result.ErrorCode), result.ErrorCode, null);
@@ -72,6 +75,7 @@ public class StudySetsController(
 
         // Progress is reported from inside the generation; a channel hands it to this loop, which writes it out.
         var ownerId = User.UserId();
+        var withGuide = IsTeacher;
         var events = Channel.CreateUnbounded<GenerationEvent>(new UnboundedChannelOptions { SingleReader = true });
         var progress = new ChannelProgress(events.Writer);
 
@@ -79,7 +83,7 @@ public class StudySetsController(
         {
             try
             {
-                var result = await studySetService.CreateAsync(request, ownerId, progress, ct);
+                var result = await studySetService.CreateAsync(request, ownerId, withGuide, progress, ct);
                 events.Writer.TryWrite(result.ErrorCode is null
                     ? GenerationEvent.Done(result.StudySet!)
                     : GenerationEvent.Error(result.ErrorCode));
@@ -154,9 +158,54 @@ public class StudySetsController(
             : Ok(studySet);
     }
 
+    /// <summary>
+    /// Teachers: writes (or rewrites) the guide on how to teach the section, e.g. for material made before guides
+    /// existed or when the guide failed during generation. Can take a minute.
+    /// </summary>
+    [HttpPost("{id:guid}/teaching-guide")]
+    [Authorize(Roles = Roles.Teacher)]
+    [ProducesResponseType<StudySetResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status422UnprocessableEntity)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status503ServiceUnavailable)]
+    public async Task<ActionResult<StudySetResponse>> CreateTeachingGuide(Guid id, CancellationToken ct)
+    {
+        var result = await studySetService.AddTeachingGuideAsync(id, User.UserId(), ct);
+        return result.ErrorCode is not null
+            ? Error(StatusFor(result.ErrorCode), result.ErrorCode, null)
+            : Ok(result.StudySet);
+    }
+
+    /// <summary>
+    /// Teachers: the test as a file, PDF or Word (.docx): the worksheet (name / class / date, no answers) or the
+    /// answer key, with the chosen question types and, optionally, the source page of each question.
+    /// </summary>
+    [HttpPost("{id:guid}/export")]
+    [Authorize(Roles = Roles.Teacher)]
+    [Produces(TestExportService.PdfType, TestExportService.DocxType, "application/problem+json")]
+    [ProducesResponseType<FileContentResult>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Export(Guid id, ExportTestRequest request, CancellationToken ct)
+    {
+        var validation = await exportValidator.ValidateAsync(request, ct);
+        if (!validation.IsValid)
+        {
+            return Error(StatusCodes.Status400BadRequest, ErrorCodes.InvalidRequest, validation.Errors[0].ErrorMessage);
+        }
+
+        var file = await exportService.ExportAsync(id, User.UserId(), request, ct);
+        return file is null
+            ? Error(StatusCodes.Status404NotFound, ErrorCodes.NotFound, null)
+            : File(file.Content, file.ContentType, file.FileName);
+    }
+
+    private bool IsTeacher => Roles.Of(User) == Roles.Teacher;
+
     private static int StatusFor(string code) => code switch
     {
         ErrorCodes.NotFound => StatusCodes.Status404NotFound,
+        ErrorCodes.NoText => StatusCodes.Status422UnprocessableEntity,
         ErrorCodes.AiInvalidOutput or ErrorCodes.AiRefused => StatusCodes.Status422UnprocessableEntity,
         _ => StatusCodes.Status503ServiceUnavailable, // ai_not_configured, ai_failed
     };

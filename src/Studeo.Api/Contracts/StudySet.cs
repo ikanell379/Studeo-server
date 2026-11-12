@@ -14,6 +14,9 @@ public record StudySet
     public List<MatchingItem> Matching { get; init; } = [];
     public List<MultipleChoiceItem> MultipleChoice { get; init; } = [];
     public List<FillBlankItem> FillBlanks { get; init; } = [];
+
+    /// <summary>Only in teachers' material: how to teach the section (shown before the test). Null otherwise.</summary>
+    public TeachingGuide? TeachingGuide { get; init; }
 }
 
 public record TheoryItem
