@@ -16,11 +16,17 @@ builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+builder.Services.AddSingleton(TimeProvider.System);
+
 // Repositories
 builder.Services.AddScoped<IHealthRepository, HealthRepository>();
+builder.Services.AddScoped<IDocumentRepository, DocumentRepository>();
 
 // Services
 builder.Services.AddScoped<IHealthService, HealthService>();
+builder.Services.AddSingleton<IPdfTextExtractor, PdfTextExtractor>();
+builder.Services.AddSingleton<ISectioner, Sectioner>();
+builder.Services.AddScoped<IDocumentService, DocumentService>();
 
 var app = builder.Build();
 
