@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Studeo.Api.Contracts;
 
 namespace Studeo.Api.Models;
 
@@ -14,6 +15,8 @@ public class StudeoDbContext(DbContextOptions<StudeoDbContext> options) : DbCont
         modelBuilder.Entity<Document>(e =>
         {
             e.Property(d => d.FileName).HasMaxLength(260);
+            e.Property(d => d.OwnerId).HasMaxLength(64);
+            e.HasIndex(d => new { d.OwnerId, d.UploadedAt });
         });
 
         modelBuilder.Entity<DocumentPage>(e =>
@@ -34,6 +37,7 @@ public class StudeoDbContext(DbContextOptions<StudeoDbContext> options) : DbCont
         modelBuilder.Entity<StudySet>(e =>
         {
             e.Property(s => s.Difficulty).HasMaxLength(10);
+            e.Property(s => s.Name).HasMaxLength(StudySetLimits.MaxNameLength);
             e.Property(s => s.Content).HasColumnType("jsonb");
             e.HasOne(s => s.Section).WithMany(x => x.StudySets)
                 .HasForeignKey(s => s.SectionId).OnDelete(DeleteBehavior.Cascade);

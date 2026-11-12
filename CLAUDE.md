@@ -36,6 +36,7 @@ Studeo-server/
 - AI provider: `"Ai:Provider"` in `appsettings.Development.json` is `Claude` (default) or `Gemini`. Gemini uses `Gemini:Model` and `Gemini:ApiKey` (recommended in user-secrets too: `dotnet user-secrets set "Gemini:ApiKey" "<key>" --project src/Studeo.Api`).
 
 ## Auth
+- Ownership: a document belongs to the user who uploaded it (`Document.OwnerId` = Keycloak `sub`, read with `User.UserId()`); a study set belongs to the owner of its section's document. Every read, list and generation filters by owner, so someone else's id gives 404 like a missing one. `GET /api/documents` and `GET /api/study-sets` list the user's own items (the UI's «Τα αρχεία μου» / «Τα κουίζ μου»).
 - All endpoints need a signed-in user (fallback policy); `[AllowAnonymous]` only on health. Documents and study sets: `[Authorize(Roles = Roles.Any)]`; teacher-only features use `Roles.Teacher`.
 - The browser never talks to Keycloak. `AuthController` (`/api/auth/register|login|refresh|logout`) does it through `KeycloakClient`, with the confidential client `studeo-api` (settings in `appsettings.Development.json` → `Keycloak`):
   - register: Admin API creates the user (email = username) with the chosen realm role, then signs in. If giving the role fails, the user is deleted again.

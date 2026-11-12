@@ -18,7 +18,7 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
         var document = await (await client.PostAsync("/api/documents", new MultipartFormDataContent { { file, "file", "bio.pdf" } }))
             .Content.ReadFromJsonAsync<DocumentResponse>();
         var sections = await client.GetFromJsonAsync<List<SectionResponse>>($"/api/documents/{document!.Id}/sections");
-        return sections![1]; // "Κεφάλαιο 2: Η φωτοσύνθεση", pages 3–4
+        return sections!.Single(s => s.Title == "Κεφάλαιο 2: Η φωτοσύνθεση"); // pages 3–4
     }
 
     private static async Task<string?> ErrorCode(HttpResponseMessage response)
@@ -92,6 +92,99 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal(ErrorCodes.NotFound, await ErrorCode(response));
+    }
+
+    private static TestUser NewStudent() => new(Guid.NewGuid().ToString(), [Studeo.Api.Auth.Roles.Student]);
+
+    [Fact]
+    public async Task List_returns_own_study_sets_with_their_pdf_and_section()
+    {
+        var client = factory.CreateClientAs(NewStudent());
+        var section = await UploadAndGetSecondSection(client);
+        factory.Ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3))));
+        var created = await (await client.PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(section.Id, "hard", Counts)))
+            .Content.ReadFromJsonAsync<StudySetResponse>();
+
+        var mine = await client.GetFromJsonAsync<List<StudySetSummaryResponse>>("/api/study-sets");
+        var others = await factory.CreateClientAs(NewStudent()).GetFromJsonAsync<List<StudySetSummaryResponse>>("/api/study-sets");
+        var documents = await client.GetFromJsonAsync<List<DocumentSummaryResponse>>("/api/documents");
+
+        var item = Assert.Single(mine!);
+        Assert.Equal((created!.Id, "Κεφάλαιο 2: Η φωτοσύνθεση", "bio.pdf", section.Id, "Κεφάλαιο 2: Η φωτοσύνθεση", "hard"),
+            (item.Id, item.Name, item.FileName, item.SectionId, item.SectionTitle, item.Difficulty));
+        Assert.Equal(documents!.Single().Id, item.DocumentId);
+        Assert.Equal(1, documents!.Single().StudySetCount);
+        Assert.Empty(others!);
+    }
+
+    [Fact]
+    public async Task Someone_elses_study_set_and_section_return_404()
+    {
+        var owner = factory.CreateClientAs(NewStudent());
+        var section = await UploadAndGetSecondSection(owner);
+        factory.Ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3))));
+        var created = await (await owner.PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(section.Id, "easy", Counts)))
+            .Content.ReadFromJsonAsync<StudySetResponse>();
+        var other = factory.CreateClientAs(NewStudent());
+
+        var get = await other.GetAsync($"/api/study-sets/{created!.Id}");
+        var create = await other.PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(section.Id, "easy", Counts));
+
+        Assert.Equal(HttpStatusCode.NotFound, get.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, create.StatusCode);
+        Assert.Equal(ErrorCodes.NotFound, await ErrorCode(create));
+    }
+
+    [Fact]
+    public async Task Named_material_can_be_renamed_and_keeps_its_pdf()
+    {
+        var client = factory.CreateClientAs(NewStudent());
+        var section = await UploadAndGetSecondSection(client);
+        factory.Ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3))));
+        var created = await (await client.PostAsJsonAsync("/api/study-sets",
+                new CreateStudySetRequest(section.Id, "easy", Counts, Name: "Φωτοσύνθεση για το διαγώνισμα")))
+            .Content.ReadFromJsonAsync<StudySetResponse>();
+        var document = (await client.GetFromJsonAsync<List<DocumentSummaryResponse>>("/api/documents"))!.Single();
+
+        var renamed = await client.PatchAsJsonAsync($"/api/study-sets/{created!.Id}", new RenameStudySetRequest("  Τελική επανάληψη "));
+        var fetched = await client.GetFromJsonAsync<StudySetResponse>($"/api/study-sets/{created.Id}");
+        var listed = (await client.GetFromJsonAsync<List<StudySetSummaryResponse>>("/api/study-sets"))!.Single();
+
+        Assert.Equal("Φωτοσύνθεση για το διαγώνισμα", created.Name);
+        Assert.Equal(document.Id, created.DocumentId);
+        Assert.Equal(HttpStatusCode.OK, renamed.StatusCode);
+        Assert.Equal("Τελική επανάληψη", fetched!.Name);
+        Assert.Equal(document.Id, fetched.DocumentId);
+        Assert.Equal("Τελική επανάληψη", listed.Name);
+    }
+
+    [Fact]
+    public async Task Rename_rejects_empty_names_and_other_users()
+    {
+        var owner = factory.CreateClientAs(NewStudent());
+        var section = await UploadAndGetSecondSection(owner);
+        factory.Ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3))));
+        var created = await (await owner.PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(section.Id, "easy", Counts)))
+            .Content.ReadFromJsonAsync<StudySetResponse>();
+
+        var empty = await owner.PatchAsJsonAsync($"/api/study-sets/{created!.Id}", new RenameStudySetRequest("   "));
+        var tooLong = await owner.PatchAsJsonAsync($"/api/study-sets/{created.Id}", new RenameStudySetRequest(new string('α', 121)));
+        var someoneElse = await factory.CreateClientAs(NewStudent())
+            .PatchAsJsonAsync($"/api/study-sets/{created.Id}", new RenameStudySetRequest("Δικό μου"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, empty.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, tooLong.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, someoneElse.StatusCode);
+        Assert.Equal("Κεφάλαιο 2: Η φωτοσύνθεση", (await owner.GetFromJsonAsync<StudySetResponse>($"/api/study-sets/{created.Id}"))!.Name);
+    }
+
+    [Fact]
+    public async Task Create_with_too_long_name_returns_400()
+    {
+        var response = await factory.CreateClientAs(TestUser.Student)
+            .PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(Guid.NewGuid(), "easy", Counts, Name: new string('α', 121)));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Fact]

@@ -13,18 +13,26 @@ public class CreateStudySetRequestValidator : AbstractValidator<CreateStudySetRe
             .Must(d => StudySetLimits.Difficulties.Contains(d)).WithErrorCode(ErrorCodes.InvalidRequest)
             .WithMessage("Difficulty must be easy, medium or hard.");
 
+        RuleFor(r => r.Mode)
+            .Must(m => m is null || StudySetModes.All.Contains(m)).WithErrorCode(ErrorCodes.InvalidRequest)
+            .WithMessage("Mode must be custom or full.");
+
+        RuleFor(r => r.Name)
+            .MaximumLength(StudySetLimits.MaxNameLength).WithErrorCode(ErrorCodes.InvalidRequest);
+
+        // In "full" mode the server picks the amounts, so Counts is not needed.
         RuleFor(r => r.Counts)
-            .NotNull().WithErrorCode(ErrorCodes.InvalidRequest)
+            .NotNull().When(r => !r.IsFull).WithErrorCode(ErrorCodes.InvalidRequest)
             .DependentRules(() =>
             {
-                RuleFor(r => r.Counts)
+                RuleFor(r => r.Counts!)
                     .Must(c => Values(c).All(v => v is >= 0 and <= StudySetLimits.MaxPerType))
                     .WithErrorCode(ErrorCodes.InvalidRequest)
                     .WithMessage($"Each count must be between 0 and {StudySetLimits.MaxPerType}.")
                     .Must(c => Values(c).Sum() > 0)
                     .WithErrorCode(ErrorCodes.InvalidRequest)
                     .WithMessage("Ask for at least one item.");
-            });
+            }).When(r => !r.IsFull);
     }
 
     private static int[] Values(QuestionCounts c) =>

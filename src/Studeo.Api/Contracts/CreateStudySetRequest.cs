@@ -2,10 +2,30 @@ namespace Studeo.Api.Contracts;
 
 public record QuestionCounts(int Theory, int OpenQuestions, int TrueFalse, int Matching, int MultipleChoice, int FillBlanks);
 
-/// <summary>Generate study material for a section. Difficulty: "easy" | "medium" | "hard".</summary>
-public record CreateStudySetRequest(Guid SectionId, string Difficulty, QuestionCounts Counts);
+/// <summary>
+/// Generate study material for a section. Difficulty: "easy" | "medium" | "hard".
+/// Mode: "custom" (default) uses Counts; "full" covers the whole section with theory and every exercise type,
+/// the amounts set by the server from the section's length (Counts is then ignored and may be null).
+/// Name: what the user calls this material (optional; the section title when empty).
+/// </summary>
+public record CreateStudySetRequest(Guid SectionId, string Difficulty, QuestionCounts? Counts, string? Mode = null, string? Name = null)
+{
+    public bool IsFull => Mode == StudySetModes.Full;
+}
 
-public record StudySetResponse(Guid Id, Guid SectionId, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, StudySet Content);
+public static class StudySetModes
+{
+    public const string Custom = "custom";
+    public const string Full = "full";
+    public static readonly string[] All = [Custom, Full];
+}
+
+/// <summary>Study material with its name and the PDF (DocumentId) and section it was made from.</summary>
+public record StudySetResponse(
+    Guid Id, Guid SectionId, Guid DocumentId, string Name, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, StudySet Content);
+
+/// <summary>PATCH /api/study-sets/{id}: give the material a new name.</summary>
+public record RenameStudySetRequest(string Name);
 
 public static class StudySetLimits
 {
@@ -15,4 +35,5 @@ public static class StudySetLimits
     public const int MinMatchingPairs = 4;
     public const int MaxMatchingPairs = 6;
     public const string Blank = "____";
+    public const int MaxNameLength = 120;
 }

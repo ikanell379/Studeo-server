@@ -13,6 +13,17 @@ public class AuthorizationTests(StudeoApiFactory factory) : IClassFixture<Studeo
         $"/api/study-sets/{Guid.NewGuid()}",
     ];
 
+    public static TheoryData<string> ListUrls => ["/api/documents", "/api/study-sets"];
+
+    [Theory]
+    [MemberData(nameof(ListUrls))]
+    public async Task Lists_need_a_signed_in_user_with_a_role(string url)
+    {
+        Assert.Equal(HttpStatusCode.Unauthorized, (await factory.CreateClient().GetAsync(url)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await factory.CreateClientAs(TestUser.WithoutRole()).GetAsync(url)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await factory.CreateClientAs(TestUser.Teacher).GetAsync(url)).StatusCode);
+    }
+
     [Theory]
     [MemberData(nameof(ProtectedUrls))]
     public async Task Anonymous_gets_401(string url)

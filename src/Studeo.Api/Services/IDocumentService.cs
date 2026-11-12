@@ -4,12 +4,17 @@ namespace Studeo.Api.Services;
 
 public interface IDocumentService
 {
-    Task<UploadDocumentResult> UploadAsync(string fileName, byte[] content, CancellationToken ct);
+    /// <summary>Extracts and stores a PDF for <paramref name="ownerId"/> (the uploading user).</summary>
+    Task<UploadDocumentResult> UploadAsync(string ownerId, string fileName, byte[] content, CancellationToken ct);
 
-    Task<DocumentResponse?> GetAsync(Guid id, CancellationToken ct);
+    /// <summary>The owner's document, or null if it doesn't exist or belongs to someone else.</summary>
+    Task<DocumentResponse?> GetAsync(Guid id, string ownerId, CancellationToken ct);
 
-    /// <summary>The document's sections in order, or null if the document does not exist.</summary>
-    Task<IReadOnlyList<SectionResponse>?> GetSectionsAsync(Guid documentId, CancellationToken ct);
+    /// <summary>The owner's documents, newest first.</summary>
+    Task<IReadOnlyList<DocumentSummaryResponse>> ListAsync(string ownerId, CancellationToken ct);
+
+    /// <summary>The document's sections in order, or null if the owner has no such document.</summary>
+    Task<IReadOnlyList<SectionResponse>?> GetSectionsAsync(Guid documentId, string ownerId, CancellationToken ct);
 }
 
 /// <summary>Either Document (success) or ErrorCode.</summary>

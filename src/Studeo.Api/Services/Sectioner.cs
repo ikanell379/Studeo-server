@@ -17,6 +17,24 @@ public partial class Sectioner : ISectioner
 
     private const int MaxHeadingLength = 100;
 
+    /// <summary>A deck of slides: on average at most this many words per page…</summary>
+    public const int MaxSlideWordsPerPage = 200;
+
+    /// <summary>…at least this many pages…</summary>
+    public const int MinSlidePages = 4;
+
+    /// <summary>…and most pages (this share) start with a short title line.</summary>
+    public const double MinSlideTitleShare = 0.6;
+
+    /// <summary>A slide title is at most this long.</summary>
+    private const int MaxSlideTitleLength = 80;
+
+    /// <summary>A run of slides with fewer words joins the next one (cover page, a quote, an image slide).</summary>
+    public const int MinSlideSectionWords = 30;
+
+    /// <summary>The title of the single section when nothing splits the document.</summary>
+    public const string WholeDocumentTitle = "Ολόκληρο το κείμενο";
+
     private record Heading(int Page, string Title, bool AtTop);
 
     public IReadOnlyList<SectionDraft> Split(IReadOnlyList<string> pages)
@@ -35,7 +53,8 @@ public partial class Sectioner : ISectioner
 
         var sections = headings.Count > 0
             ? FromHeadings(headings, words)
-            : Chunk(words, 1, pages.Count, i => $"Μέρος {i}", singleTitle: "Ολόκληρο το κείμενο");
+            : FromSlideTitles(pages, words)
+              ?? Chunk(words, 1, pages.Count, i => $"Μέρος {i}", singleTitle: WholeDocumentTitle);
 
         return sections.Where(s => s.WordCount > 0).ToList();
     }
@@ -73,6 +92,80 @@ public partial class Sectioner : ISectioner
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Presentations have no "Κεφάλαιο" headings but every slide starts with its title. Consecutive slides with the
+    /// same title (or a longer title starting with it, "Διδακτική μεθοδολογία – Παραδείγματα") form one section;
+    /// tiny runs join the next one. Null when the document doesn't look like slides or gives a single section.
+    /// </summary>
+    internal static List<SectionDraft>? FromSlideTitles(IReadOnlyList<string> pages, int[] words)
+    {
+        if (pages.Count < MinSlidePages || words.Sum() > MaxSlideWordsPerPage * pages.Count)
+        {
+            return null;
+        }
+
+        var titles = pages.Select(SlideTitle).ToArray();
+        if (titles.Count(t => t is not null) < MinSlideTitleShare * pages.Count)
+        {
+            return null;
+        }
+
+        // Runs of slides that share a title; a slide without a title continues the previous run.
+        var runs = new List<(string Title, int Start, int End)>();
+        for (var p = 1; p <= pages.Count; p++)
+        {
+            var title = titles[p - 1];
+            if (runs.Count > 0 && (title is null || SameTopic(runs[^1].Title, title)))
+            {
+                runs[^1] = runs[^1] with { End = p };
+            }
+            else
+            {
+                runs.Add((title ?? $"Σελίδα {p}", p, p));
+            }
+        }
+
+        // Tiny runs (a cover, a quote) join the next run, or the previous one at the end.
+        var merged = new List<(string Title, int Start, int End)>();
+        (string Title, int Start, int End)? carry = null;
+        foreach (var run in runs)
+        {
+            var current = carry is { } c ? (run.Title, c.Start, run.End) : run;
+            carry = null;
+            if (SumWords(words, current.Start, current.End) < MinSlideSectionWords)
+            {
+                carry = current;
+                continue;
+            }
+            merged.Add(current);
+        }
+        if (carry is { } tail)
+        {
+            if (merged.Count == 0) return null;
+            merged[^1] = merged[^1] with { End = tail.End };
+        }
+
+        return merged.Count < 2
+            ? null
+            : merged.Select(r => new SectionDraft(r.Title, r.Start, r.End, SumWords(words, r.Start, r.End))).ToList();
+    }
+
+    /// <summary>The first line of a slide if it is short enough to be its title.</summary>
+    private static string? SlideTitle(string page)
+    {
+        var first = page.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        if (first is null) return null;
+        var title = CollapseSpaces(first).TrimStart('•', '●', '-', '–', ' ');
+        return title.Length is > 1 and <= MaxSlideTitleLength && title.Any(char.IsLetter) ? title : null;
+    }
+
+    private static bool SameTopic(string runTitle, string title)
+    {
+        var a = Normalize(runTitle);
+        var b = Normalize(title);
+        return a == b || b.StartsWith(a, StringComparison.Ordinal);
     }
 
     /// <summary>Groups whole pages into chunks of about TargetWords; a small last chunk is merged into the previous one.</summary>
@@ -148,7 +241,7 @@ public partial class Sectioner : ISectioner
     internal static bool IsNumberedHeading(string line) =>
         line.Length <= MaxHeadingLength && NumberedHeadingRegex().IsMatch(line) && !DotLeaderRegex().IsMatch(line);
 
-    internal static int CountWords(string text) =>
+    public static int CountWords(string text) =>
         text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Count(w => w.Any(char.IsLetterOrDigit));
 
     private static int SumWords(int[] words, int startPage, int endPage) =>

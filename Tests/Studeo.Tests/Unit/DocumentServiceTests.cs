@@ -22,8 +22,11 @@ public class DocumentServiceTests
             return Task.CompletedTask;
         }
 
-        public Task<Document?> GetAsync(Guid id, CancellationToken ct) =>
-            Task.FromResult(Added.FirstOrDefault(d => d.Id == id));
+        public Task<Document?> GetAsync(Guid id, string ownerId, CancellationToken ct) =>
+            Task.FromResult(Added.FirstOrDefault(d => d.Id == id && d.OwnerId == ownerId));
+
+        public Task<IReadOnlyList<DocumentSummaryResponse>> ListAsync(string ownerId, CancellationToken ct) =>
+            throw new NotSupportedException();
 
         public Task<IReadOnlyList<DocumentPage>> GetPagesAsync(Guid documentId, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<DocumentPage>>([]);
@@ -31,11 +34,13 @@ public class DocumentServiceTests
         public Task<IReadOnlyList<Section>> GetSectionsAsync(Guid documentId, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<Section>>(Added.Single(d => d.Id == documentId).Sections);
 
-        public Task<Section?> GetSectionAsync(Guid sectionId, CancellationToken ct) => throw new NotSupportedException();
+        public Task<Section?> GetSectionAsync(Guid sectionId, string ownerId, CancellationToken ct) => throw new NotSupportedException();
 
         public Task<IReadOnlyList<DocumentPage>> GetPagesAsync(Guid documentId, int fromPage, int toPage, CancellationToken ct) =>
             throw new NotSupportedException();
     }
+
+    private const string Owner = "owner-1";
 
     private static readonly string TextPage = new('α', DocumentLimits.MinLettersPerPage);
 
@@ -50,13 +55,24 @@ public class DocumentServiceTests
     {
         var (service, repo) = Create(new PdfExtractionResult([TextPage, TextPage], null));
 
-        var result = await service.UploadAsync(@"C:\fakepath\notes.pdf", [], CancellationToken.None);
+        var result = await service.UploadAsync(Owner, @"C:\fakepath\notes.pdf", [], CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         Assert.Equal("notes.pdf", result.Document!.FileName);
         Assert.Equal(2, result.Document.PageCount);
         var saved = Assert.Single(repo.Added);
+        Assert.Equal(Owner, saved.OwnerId);
         Assert.Equal([1, 2], saved.Pages.Select(p => p.PageNumber));
+    }
+
+    [Fact]
+    public async Task Someone_elses_document_is_not_found()
+    {
+        var (service, _) = Create(new PdfExtractionResult([TextPage], null));
+        var uploaded = await service.UploadAsync(Owner, "a.pdf", [], CancellationToken.None);
+
+        Assert.Null(await service.GetAsync(uploaded.Document!.Id, "someone-else", CancellationToken.None));
+        Assert.Null(await service.GetSectionsAsync(uploaded.Document.Id, "someone-else", CancellationToken.None));
     }
 
     [Fact]
@@ -65,12 +81,34 @@ public class DocumentServiceTests
         var page1 = "Κεφάλαιο 1: Αρχές\n" + TextPage;
         var page2 = "Κεφάλαιο 2: Εφαρμογές\n" + TextPage;
         var (service, _) = Create(new PdfExtractionResult([page1, page2], null));
-        var uploaded = await service.UploadAsync("a.pdf", [], CancellationToken.None);
+        var uploaded = await service.UploadAsync(Owner, "a.pdf", [], CancellationToken.None);
 
-        var sections = await service.GetSectionsAsync(uploaded.Document!.Id, CancellationToken.None);
+        var sections = await service.GetSectionsAsync(uploaded.Document!.Id, Owner, CancellationToken.None);
 
-        Assert.Equal([(1, "Κεφάλαιο 1: Αρχές", 1, 1), (2, "Κεφάλαιο 2: Εφαρμογές", 2, 2)],
+        Assert.Equal([(0, "Ολόκληρο το κείμενο", 1, 2), (1, "Κεφάλαιο 1: Αρχές", 1, 1), (2, "Κεφάλαιο 2: Εφαρμογές", 2, 2)],
             sections!.Select(s => (s.Order, s.Title, s.StartPage, s.EndPage)));
+        Assert.Equal([true, false, false], sections!.Select(s => s.IsWholeDocument));
+    }
+
+    [Fact]
+    public void A_document_that_is_not_split_is_only_the_whole_document()
+    {
+        var sections = DocumentService.WithWholeDocument(
+            [new SectionDraft("Ολόκληρο το κείμενο", 1, 3, 600)], ["α", "β", "γ"]);
+
+        var only = Assert.Single(sections);
+        Assert.True(only.IsWholeDocument);
+        Assert.Equal((1, 1, 3), (only.Order, only.StartPage, only.EndPage));
+    }
+
+    [Fact]
+    public void One_section_that_skips_pages_still_gets_the_whole_document_first()
+    {
+        var sections = DocumentService.WithWholeDocument(
+            [new SectionDraft("Κεφάλαιο 1", 2, 3, 500)], ["εξώφυλλο", "λέξη λέξη", "λέξη"]);
+
+        Assert.Equal([(0, true, 1, 3, 4), (1, false, 2, 3, 500)],
+            sections.Select(s => (s.Order, s.IsWholeDocument, s.StartPage, s.EndPage, s.WordCount)));
     }
 
     [Fact]
@@ -78,7 +116,7 @@ public class DocumentServiceTests
     {
         var (service, _) = Create(new PdfExtractionResult([], null));
 
-        Assert.Null(await service.GetSectionsAsync(Guid.NewGuid(), CancellationToken.None));
+        Assert.Null(await service.GetSectionsAsync(Guid.NewGuid(), Owner, CancellationToken.None));
     }
 
     [Fact]
@@ -86,7 +124,7 @@ public class DocumentServiceTests
     {
         var (service, repo) = Create(PdfExtractionResult.Fail(ErrorCodes.TooManyPages));
 
-        var result = await service.UploadAsync("a.pdf", [], CancellationToken.None);
+        var result = await service.UploadAsync(Owner, "a.pdf", [], CancellationToken.None);
 
         Assert.Equal(ErrorCodes.TooManyPages, result.ErrorCode);
         Assert.Empty(repo.Added);
@@ -97,7 +135,7 @@ public class DocumentServiceTests
     {
         var (service, repo) = Create(new PdfExtractionResult(["", " 12 ", ""], null));
 
-        var result = await service.UploadAsync("scan.pdf", [], CancellationToken.None);
+        var result = await service.UploadAsync(Owner, "scan.pdf", [], CancellationToken.None);
 
         Assert.Equal(ErrorCodes.NoText, result.ErrorCode);
         Assert.Empty(repo.Added);

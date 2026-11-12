@@ -176,6 +176,53 @@ public class SectionerTests
         Assert.Equal(("Κεφάλαιο 1", 2, 2), Assert.Single(sections) is var s ? (s.Title, s.StartPage, s.EndPage) : default);
     }
 
+    /// <summary>A slide: a short title line, then a few bullet points.</summary>
+    private static string Slide(string title, int words = 50) => Page(title, "• " + Words(words));
+
+    [Fact]
+    public void Slides_are_split_by_their_titles_and_repeated_titles_are_joined()
+    {
+        string[] pages =
+        [
+            Page("Εισαγωγή στην", "Παιδαγωγική Επιστήμη"), // cover and contents: too few words,
+            Slide("Περιεχόμενα", 20),                      // so they join the first topic
+            Slide("Paulo Freire(1921 –1997)"),
+            Slide("Paulo Freire(1921 –1997)"),
+            Slide("Η «Τραπεζική» έννοια της εκπαίδευσης"),
+            Slide("Διδακτική μεθοδολογία"),
+            Slide("Διδακτική μεθοδολογία –Παραδείγματα θεμάτων συζήτησης"),
+            Slide("Διδακτική μεθοδολογία"),
+        ];
+
+        var sections = _sectioner.Split(pages);
+
+        Assert.Equal(
+            [
+                ("Paulo Freire(1921 –1997)", 1, 4),
+                ("Η «Τραπεζική» έννοια της εκπαίδευσης", 5, 5),
+                ("Διδακτική μεθοδολογία", 6, 8),
+            ],
+            sections.Select(s => (s.Title, s.StartPage, s.EndPage)));
+    }
+
+    [Fact]
+    public void Text_heavy_pages_are_not_treated_as_slides()
+    {
+        var pages = Enumerable.Range(1, 6).Select(i => Slide($"Τίτλος {i}", 400)).ToArray();
+
+        var section = Assert.Single(_sectioner.Split(pages));
+
+        Assert.Equal("Ολόκληρο το κείμενο", section.Title);
+    }
+
+    [Fact]
+    public void Few_slides_stay_one_section()
+    {
+        var section = Assert.Single(_sectioner.Split([Slide("Α"), Slide("Β"), Slide("Γ")]));
+
+        Assert.Equal(("Ολόκληρο το κείμενο", 1, 3), (section.Title, section.StartPage, section.EndPage));
+    }
+
     [Fact]
     public void CountWords_ignores_punctuation_only_tokens()
     {

@@ -12,7 +12,7 @@ public class DocumentService(
 {
     private const int MaxFileNameLength = 260;
 
-    public async Task<UploadDocumentResult> UploadAsync(string fileName, byte[] content, CancellationToken ct)
+    public async Task<UploadDocumentResult> UploadAsync(string ownerId, string fileName, byte[] content, CancellationToken ct)
     {
         var extraction = extractor.Extract(content, DocumentLimits.MaxPages);
         if (extraction.ErrorCode is not null)
@@ -28,45 +28,77 @@ public class DocumentService(
         var document = new Document
         {
             Id = Guid.NewGuid(),
+            OwnerId = ownerId,
             FileName = SafeFileName(fileName),
             PageCount = extraction.Pages.Count,
             UploadedAt = timeProvider.GetUtcNow(),
             Pages = extraction.Pages
                 .Select((text, i) => new DocumentPage { Id = Guid.NewGuid(), PageNumber = i + 1, Text = text })
                 .ToList(),
-            Sections = sectioner.Split(extraction.Pages)
-                .Select((s, i) => new Section
-                {
-                    Id = Guid.NewGuid(),
-                    Order = i + 1,
-                    Title = s.Title,
-                    StartPage = s.StartPage,
-                    EndPage = s.EndPage,
-                    WordCount = s.WordCount,
-                })
-                .ToList(),
+            Sections = WithWholeDocument(sectioner.Split(extraction.Pages), extraction.Pages),
         };
 
         await repository.AddAsync(document, ct);
         return new UploadDocumentResult(ToResponse(document), null);
     }
 
-    public async Task<DocumentResponse?> GetAsync(Guid id, CancellationToken ct)
+    public async Task<DocumentResponse?> GetAsync(Guid id, string ownerId, CancellationToken ct)
     {
-        var document = await repository.GetAsync(id, ct);
+        var document = await repository.GetAsync(id, ownerId, ct);
         return document is null ? null : ToResponse(document);
     }
 
-    public async Task<IReadOnlyList<SectionResponse>?> GetSectionsAsync(Guid documentId, CancellationToken ct)
+    public Task<IReadOnlyList<DocumentSummaryResponse>> ListAsync(string ownerId, CancellationToken ct) =>
+        repository.ListAsync(ownerId, ct);
+
+    public async Task<IReadOnlyList<SectionResponse>?> GetSectionsAsync(Guid documentId, string ownerId, CancellationToken ct)
     {
-        if (await repository.GetAsync(documentId, ct) is null)
+        if (await repository.GetAsync(documentId, ownerId, ct) is null)
         {
             return null;
         }
         var sections = await repository.GetSectionsAsync(documentId, ct);
         return sections
-            .Select(s => new SectionResponse(s.Id, s.Order, s.Title, s.StartPage, s.EndPage, s.WordCount))
+            .Select(s => new SectionResponse(s.Id, s.Order, s.Title, s.StartPage, s.EndPage, s.WordCount, s.IsWholeDocument))
             .ToList();
+    }
+
+    /// <summary>
+    /// The sections in order, plus «Ολόκληρο το κείμενο» first (Order 0) so the user can also study everything.
+    /// When the only section already spans every page, it is the whole document itself (no duplicate).
+    /// </summary>
+    internal static List<Section> WithWholeDocument(IReadOnlyList<SectionDraft> drafts, IReadOnlyList<string> pages)
+    {
+        var sections = drafts
+            .Select((s, i) => new Section
+            {
+                Id = Guid.NewGuid(),
+                Order = i + 1,
+                Title = s.Title,
+                StartPage = s.StartPage,
+                EndPage = s.EndPage,
+                WordCount = s.WordCount,
+            })
+            .ToList();
+
+        if (sections is [var only] && only.StartPage == 1 && only.EndPage == pages.Count)
+        {
+            only.IsWholeDocument = true;
+            only.Title = Sectioner.WholeDocumentTitle;
+            return sections;
+        }
+
+        sections.Insert(0, new Section
+        {
+            Id = Guid.NewGuid(),
+            Order = 0,
+            Title = Sectioner.WholeDocumentTitle,
+            StartPage = 1,
+            EndPage = pages.Count,
+            WordCount = pages.Sum(Sectioner.CountWords),
+            IsWholeDocument = true,
+        });
+        return sections;
     }
 
     /// <summary>A scanned PDF has (almost) no extractable letters.</summary>

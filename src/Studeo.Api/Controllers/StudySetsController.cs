@@ -16,6 +16,7 @@ namespace Studeo.Api.Controllers;
 public class StudySetsController(
     IStudySetService studySetService,
     IValidator<CreateStudySetRequest> createValidator,
+    IValidator<RenameStudySetRequest> renameValidator,
     ILogger<StudySetsController> logger) : ControllerBase
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -36,7 +37,7 @@ public class StudySetsController(
             return Error(StatusCodes.Status400BadRequest, ErrorCodes.InvalidRequest, first.ErrorMessage);
         }
 
-        var result = await studySetService.CreateAsync(request, null, ct);
+        var result = await studySetService.CreateAsync(request, User.UserId(), null, ct);
         if (result.ErrorCode is not null)
         {
             return Error(StatusFor(result.ErrorCode), result.ErrorCode, null);
@@ -70,6 +71,7 @@ public class StudySetsController(
         HttpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
 
         // Progress is reported from inside the generation; a channel hands it to this loop, which writes it out.
+        var ownerId = User.UserId();
         var events = Channel.CreateUnbounded<GenerationEvent>(new UnboundedChannelOptions { SingleReader = true });
         var progress = new ChannelProgress(events.Writer);
 
@@ -77,7 +79,7 @@ public class StudySetsController(
         {
             try
             {
-                var result = await studySetService.CreateAsync(request, progress, ct);
+                var result = await studySetService.CreateAsync(request, ownerId, progress, ct);
                 events.Writer.TryWrite(result.ErrorCode is null
                     ? GenerationEvent.Done(result.StudySet!)
                     : GenerationEvent.Error(result.ErrorCode));
@@ -115,12 +117,38 @@ public class StudySetsController(
         }
     }
 
+    /// <summary>The signed-in user's study material ("Τα κουίζ μου"), newest first.</summary>
+    [HttpGet]
+    [ProducesResponseType<IReadOnlyList<StudySetSummaryResponse>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<StudySetSummaryResponse>>> List(CancellationToken ct) =>
+        Ok(await studySetService.ListAsync(User.UserId(), ct));
+
+    /// <summary>Study material made from one of the signed-in user's PDFs; someone else's gives 404.</summary>
     [HttpGet("{id:guid}")]
     [ProducesResponseType<StudySetResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<StudySetResponse>> Get(Guid id, CancellationToken ct)
     {
-        var studySet = await studySetService.GetAsync(id, ct);
+        var studySet = await studySetService.GetAsync(id, User.UserId(), ct);
+        return studySet is null
+            ? Error(StatusCodes.Status404NotFound, ErrorCodes.NotFound, null)
+            : Ok(studySet);
+    }
+
+    /// <summary>Gives the signed-in user's study material a new name (shown and searched in «Τα κουίζ μου»).</summary>
+    [HttpPatch("{id:guid}")]
+    [ProducesResponseType<StudySetResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<StudySetResponse>> Rename(Guid id, RenameStudySetRequest request, CancellationToken ct)
+    {
+        var validation = await renameValidator.ValidateAsync(request, ct);
+        if (!validation.IsValid)
+        {
+            return Error(StatusCodes.Status400BadRequest, ErrorCodes.InvalidRequest, validation.Errors[0].ErrorMessage);
+        }
+
+        var studySet = await studySetService.RenameAsync(id, User.UserId(), request.Name, ct);
         return studySet is null
             ? Error(StatusCodes.Status404NotFound, ErrorCodes.NotFound, null)
             : Ok(studySet);

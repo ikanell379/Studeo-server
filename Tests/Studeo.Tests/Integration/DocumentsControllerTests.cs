@@ -69,8 +69,13 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
 
         Assert.NotNull(sections);
         Assert.Equal(
-            [(1, "Κεφάλαιο 1: Το κύτταρο", 1, 2), (2, "Κεφάλαιο 2: Η φωτοσύνθεση", 3, 4)],
-            sections.Select(s => (s.Order, s.Title, s.StartPage, s.EndPage)));
+            [
+                (0, "Ολόκληρο το κείμενο", 1, 4, true),
+                (1, "Κεφάλαιο 1: Το κύτταρο", 1, 2, false),
+                (2, "Κεφάλαιο 2: Η φωτοσύνθεση", 3, 4, false),
+            ],
+            sections.Select(s => (s.Order, s.Title, s.StartPage, s.EndPage, s.IsWholeDocument)));
+        Assert.Equal(sections[1].WordCount + sections[2].WordCount, sections[0].WordCount);
         Assert.All(sections, s => Assert.True(s.WordCount > 0));
     }
 
@@ -81,6 +86,39 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal(ErrorCodes.NotFound, await ErrorCode(response));
+    }
+
+    /// <summary>A user with no documents yet, so lists only show what the test made.</summary>
+    private static TestUser NewStudent() => new(Guid.NewGuid().ToString(), [Studeo.Api.Auth.Roles.Student]);
+
+    [Fact]
+    public async Task List_returns_only_own_documents_newest_first()
+    {
+        var maria = factory.CreateClientAs(NewStudent());
+        var other = factory.CreateClientAs(NewStudent());
+        await maria.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "first.pdf"));
+        await maria.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "second.pdf"));
+        await other.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "not-mine.pdf"));
+
+        var list = await maria.GetFromJsonAsync<List<DocumentSummaryResponse>>("/api/documents");
+
+        Assert.Equal(["second.pdf", "first.pdf"], list!.Select(d => d.FileName));
+        Assert.All(list!, d => Assert.Equal((4, 0), (d.PageCount, d.StudySetCount)));
+    }
+
+    [Fact]
+    public async Task Someone_elses_document_returns_404()
+    {
+        var owner = factory.CreateClientAs(NewStudent());
+        var created = await (await owner.PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "bio.pdf")))
+            .Content.ReadFromJsonAsync<DocumentResponse>();
+        var other = factory.CreateClientAs(NewStudent());
+
+        var document = await other.GetAsync($"/api/documents/{created!.Id}");
+        var sections = await other.GetAsync($"/api/documents/{created.Id}/sections");
+
+        Assert.Equal(HttpStatusCode.NotFound, document.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, sections.StatusCode);
     }
 
     [Fact]

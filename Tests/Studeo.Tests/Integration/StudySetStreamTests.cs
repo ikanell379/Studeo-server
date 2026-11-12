@@ -20,7 +20,7 @@ public class StudySetStreamTests(StudeoApiFactory factory) : IClassFixture<Stude
         var document = await (await client.PostAsync("/api/documents", new MultipartFormDataContent { { file, "file", "bio.pdf" } }))
             .Content.ReadFromJsonAsync<DocumentResponse>();
         var sections = await client.GetFromJsonAsync<List<SectionResponse>>($"/api/documents/{document!.Id}/sections");
-        return sections![1];
+        return sections!.Single(s => s.Title == "Κεφάλαιο 2: Η φωτοσύνθεση");
     }
 
     private static async Task<List<GenerationEvent>> Events(HttpResponseMessage response) =>

@@ -15,6 +15,8 @@ public class StudySetServiceTests
 {
     private static readonly QuestionCounts Counts = TestStudySets.SmallCounts;
 
+    private const string Owner = "owner-1";
+
     private readonly Section _section = new()
     {
         Id = Guid.NewGuid(), DocumentId = Guid.NewGuid(), Order = 1, Title = "Κεφάλαιο 2: Η φωτοσύνθεση", StartPage = 3, EndPage = 4,
@@ -22,6 +24,8 @@ public class StudySetServiceTests
 
     private readonly FakeAiClient _ai = new();
     private readonly FakeStudySetRepository _studySets = new();
+
+    public StudySetServiceTests() => _studySets.Section = _section;
 
     private StudySetService Service() => new(
         new FakeDocumentRepository(_section,
@@ -41,7 +45,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(ValidJson());
 
-        var result = await Service().CreateAsync(Request(), null, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), Owner, null, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         var content = result.StudySet!.Content;
@@ -63,7 +67,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(ValidJson());
 
-        await Service().CreateAsync(Request(), null, CancellationToken.None);
+        await Service().CreateAsync(Request(), Owner, null, CancellationToken.None);
 
         var (system, user) = Assert.Single(_ai.Calls);
         Assert.Equal(GenerateStudySetPrompt.System, system);
@@ -79,7 +83,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(ValidJson(page: 9), ValidJson());
 
-        var result = await Service().CreateAsync(Request(), null, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), Owner, null, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         Assert.Equal(2, _ai.Calls.Count);
@@ -92,7 +96,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(AiResult.Ok("{not json"), ValidJson(page: 9));
 
-        var result = await Service().CreateAsync(Request(), null, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), Owner, null, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.AiInvalidOutput, result.ErrorCode);
         Assert.Equal(StudySetService.MaxAttempts, _ai.Calls.Count);
@@ -104,7 +108,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(AiResult.Fail(ErrorCodes.AiInvalidOutput), ValidJson());
 
-        var result = await Service().CreateAsync(Request(), null, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), Owner, null, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         Assert.Equal(2, _ai.Calls.Count);
@@ -118,7 +122,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(AiResult.Fail(code), ValidJson());
 
-        var result = await Service().CreateAsync(Request(), null, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), Owner, null, CancellationToken.None);
 
         Assert.Equal(code, result.ErrorCode);
         Assert.Single(_ai.Calls);
@@ -127,10 +131,41 @@ public class StudySetServiceTests
     [Fact]
     public async Task Unknown_section_returns_not_found_without_calling_ai()
     {
-        var result = await Service().CreateAsync(new CreateStudySetRequest(Guid.NewGuid(), "easy", Counts), null, CancellationToken.None);
+        var result = await Service().CreateAsync(new CreateStudySetRequest(Guid.NewGuid(), "easy", Counts), Owner, null, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
         Assert.Empty(_ai.Calls);
+    }
+
+    [Fact]
+    public async Task Section_of_someone_elses_document_returns_not_found_without_calling_ai()
+    {
+        var result = await Service().CreateAsync(Request(), "someone-else", null, CancellationToken.None);
+
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+        Assert.Empty(_ai.Calls);
+        Assert.Empty(_studySets.Saved);
+    }
+
+    [Fact]
+    public async Task Material_is_named_by_the_user_or_after_its_section()
+    {
+        _ai.Returns(ValidJson());
+        var named = await Service().CreateAsync(Request() with { Name = "  Επανάληψη για το τεστ  " }, Owner, null, CancellationToken.None);
+        _ai.Returns(ValidJson());
+        var unnamed = await Service().CreateAsync(Request() with { Name = "   " }, Owner, null, CancellationToken.None);
+
+        Assert.Equal("Επανάληψη για το τεστ", named.StudySet!.Name);
+        Assert.Equal("Κεφάλαιο 2: Η φωτοσύνθεση", unnamed.StudySet!.Name);
+        Assert.Equal(_section.DocumentId, named.StudySet.DocumentId);
+    }
+
+    [Fact]
+    public void Long_section_title_is_cut_to_the_name_limit()
+    {
+        var name = StudySetService.NameOrDefault(null, new string('α', 300));
+
+        Assert.Equal(StudySetLimits.MaxNameLength, name.Length);
     }
 
     [Fact]
@@ -138,9 +173,9 @@ public class StudySetServiceTests
     {
         _ai.Returns(ValidJson());
         var service = Service();
-        var created = (await service.CreateAsync(Request(), null, CancellationToken.None)).StudySet!;
+        var created = (await service.CreateAsync(Request(), Owner, null, CancellationToken.None)).StudySet!;
 
-        var fetched = await service.GetAsync(created.Id, CancellationToken.None);
+        var fetched = await service.GetAsync(created.Id, Owner, CancellationToken.None);
 
         Assert.NotNull(fetched);
         Assert.Equal(created.Content.Theory.Select(t => t.Id), fetched.Content.Theory.Select(t => t.Id));
@@ -171,12 +206,42 @@ public class StudySetServiceTests
     }
 
     [Fact]
+    public async Task Full_mode_covers_the_whole_section_with_amounts_from_its_length()
+    {
+        _section.WordCount = 1200;
+        var expected = FullCoverage.CountsFor(1200);
+        _ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(expected, page: 3))));
+        var progress = new RecordingProgress();
+
+        var result = await Service().CreateAsync(
+            new CreateStudySetRequest(_section.Id, "medium", null, StudySetModes.Full), Owner, progress, CancellationToken.None);
+
+        Assert.Null(result.ErrorCode);
+        Assert.Equal(expected.Theory, result.StudySet!.Content.Theory.Count);
+        Assert.Equal(expected.FillBlanks, result.StudySet.Content.FillBlanks.Count);
+        var prompt = _ai.Calls.Single().User;
+        Assert.Contains("ΠΛΗΡΟΥΣ ΚΑΛΥΨΗΣ", prompt);
+        Assert.Contains($"- theory: {expected.Theory}", prompt);
+        Assert.All(progress.Reports, p => Assert.Equal(StudySetService.TotalItems(expected), p.Total));
+    }
+
+    [Fact]
+    public async Task Custom_mode_prompt_has_no_full_coverage_instructions()
+    {
+        _ai.Returns(ValidJson());
+
+        await Service().CreateAsync(Request(), Owner, null, CancellationToken.None);
+
+        Assert.DoesNotContain("ΠΛΗΡΟΥΣ ΚΑΛΥΨΗΣ", _ai.Calls.Single().User);
+    }
+
+    [Fact]
     public async Task Reports_real_progress_item_by_item_then_saving()
     {
         _ai.Returns(ValidJson());
         var progress = new RecordingProgress();
 
-        var result = await Service().CreateAsync(Request(), progress, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), Owner, progress, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         var total = StudySetService.TotalItems(Counts);
@@ -196,7 +261,7 @@ public class StudySetServiceTests
         _ai.Returns(AiResult.Ok("{\"theory\":[{\"page\":1}]}"), ValidJson());
         var progress = new RecordingProgress();
 
-        await Service().CreateAsync(Request(), progress, CancellationToken.None);
+        await Service().CreateAsync(Request(), Owner, progress, CancellationToken.None);
 
         var second = progress.Reports.SkipWhile(p => p.Attempt == 1).ToList();
         Assert.Equal(new GenerationProgress(GenerationProgress.Reading, 2, 0, StudySetService.TotalItems(Counts), 3), second[0]);
@@ -224,12 +289,14 @@ public class StudySetServiceTests
     private sealed class FakeDocumentRepository(Section section, List<DocumentPage> pages) : IDocumentRepository
     {
         public Task AddAsync(Document document, CancellationToken ct) => throw new NotSupportedException();
-        public Task<Document?> GetAsync(Guid id, CancellationToken ct) => throw new NotSupportedException();
+        public Task<Document?> GetAsync(Guid id, string ownerId, CancellationToken ct) => throw new NotSupportedException();
+        public Task<IReadOnlyList<DocumentSummaryResponse>> ListAsync(string ownerId, CancellationToken ct) => throw new NotSupportedException();
         public Task<IReadOnlyList<DocumentPage>> GetPagesAsync(Guid documentId, CancellationToken ct) => throw new NotSupportedException();
         public Task<IReadOnlyList<Section>> GetSectionsAsync(Guid documentId, CancellationToken ct) => throw new NotSupportedException();
 
-        public Task<Section?> GetSectionAsync(Guid sectionId, CancellationToken ct) =>
-            Task.FromResult(sectionId == section.Id ? section : null);
+        /// <summary>The section belongs to <see cref="Owner"/>.</summary>
+        public Task<Section?> GetSectionAsync(Guid sectionId, string ownerId, CancellationToken ct) =>
+            Task.FromResult(sectionId == section.Id && ownerId == Owner ? section : null);
 
         public Task<IReadOnlyList<DocumentPage>> GetPagesAsync(Guid documentId, int fromPage, int toPage, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<DocumentPage>>(pages.Where(p => p.PageNumber >= fromPage && p.PageNumber <= toPage).ToList());
@@ -245,7 +312,20 @@ public class StudySetServiceTests
             return Task.CompletedTask;
         }
 
-        public Task<StudySetEntity?> GetAsync(Guid id, CancellationToken ct) =>
-            Task.FromResult(Saved.FirstOrDefault(s => s.Id == id));
+        /// <summary>The section that saved sets are loaded with, like the real repository's Include.</summary>
+        public Section? Section { get; set; }
+
+        public Task<StudySetEntity?> GetAsync(Guid id, string ownerId, CancellationToken ct)
+        {
+            var saved = ownerId == Owner ? Saved.FirstOrDefault(s => s.Id == id) : null;
+            if (saved is not null) saved.Section = Section;
+            return Task.FromResult(saved);
+        }
+
+        public Task<IReadOnlyList<StudySetSummaryResponse>> ListAsync(string ownerId, CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<StudySetEntity?> RenameAsync(Guid id, string ownerId, string name, DateTimeOffset now, CancellationToken ct) =>
+            throw new NotSupportedException();
     }
 }

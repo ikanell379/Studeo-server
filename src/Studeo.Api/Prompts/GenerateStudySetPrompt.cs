@@ -32,11 +32,25 @@ public static class GenerateStudySetPrompt
         - fillBlanks: πρόταση με ακριβώς ένα κενό, σημειωμένο ως "____" (τέσσερις κάτω παύλες), και η λέξη ή φράση που λείπει (answer).
         """;
 
-    public static string User(string sectionTitle, string sectionText, string difficulty, QuestionCounts counts)
+    /// <summary>Extra instructions for "full" mode: cover the whole section, in order.</summary>
+    public const string FullCoverage = """
+        Λειτουργία ΠΛΗΡΟΥΣ ΚΑΛΥΨΗΣ: το υλικό πρέπει να καλύπτει ΟΛΟ το κείμενο της ενότητας, όχι μόνο τα πιο σημαντικά σημεία.
+        - Πέρασε το κείμενο με τη σειρά, από την αρχή ως το τέλος, και μοίρασε τα στοιχεία σε όλες τις σελίδες του.
+        - Κάθε έννοια, ορισμός, γεγονός, σχέση, αριθμός ή ημερομηνία του κειμένου εμφανίζεται στη θεωρία και ελέγχεται από τουλάχιστον μία άσκηση.
+        - Η θεωρία ακολουθεί τη σειρά του κειμένου, ώστε να διαβάζεται σαν πλήρης επανάληψη της ενότητας.
+        - Μην επαναλαμβάνεις το ίδιο σημείο σε πολλές ασκήσεις του ίδιου τύπου, όσο υπάρχουν σημεία που δεν έχουν ελεγχθεί.
+        """;
+
+    public static string User(string sectionTitle, string sectionText, string difficulty, QuestionCounts counts, bool fullCoverage = false)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"Ενότητα: {sectionTitle}");
         sb.AppendLine($"Δυσκολία: {difficulty}");
+        if (fullCoverage)
+        {
+            sb.AppendLine();
+            sb.AppendLine(FullCoverage);
+        }
         sb.AppendLine("Ποσότητες:");
         sb.AppendLine($"- theory: {counts.Theory}");
         sb.AppendLine($"- openQuestions: {counts.OpenQuestions}");

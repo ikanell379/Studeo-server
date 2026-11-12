@@ -33,6 +33,11 @@ namespace Studeo.Api.Models.Migrations
                         .HasMaxLength(260)
                         .HasColumnType("character varying(260)");
 
+                    b.Property<string>("OwnerId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<int>("PageCount")
                         .HasColumnType("integer");
 
@@ -40,6 +45,8 @@ namespace Studeo.Api.Models.Migrations
                         .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("OwnerId", "UploadedAt");
 
                     b.ToTable("Documents");
                 });
@@ -80,6 +87,9 @@ namespace Studeo.Api.Models.Migrations
                     b.Property<int>("EndPage")
                         .HasColumnType("integer");
 
+                    b.Property<bool>("IsWholeDocument")
+                        .HasColumnType("boolean");
+
                     b.Property<int>("Order")
                         .HasColumnType("integer");
 
@@ -119,6 +129,11 @@ namespace Studeo.Api.Models.Migrations
                         .IsRequired()
                         .HasMaxLength(10)
                         .HasColumnType("character varying(10)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
 
                     b.Property<Guid>("SectionId")
                         .HasColumnType("uuid");

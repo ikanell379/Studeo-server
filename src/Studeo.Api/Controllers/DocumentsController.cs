@@ -39,7 +39,7 @@ public class DocumentsController(
             content = buffer.ToArray();
         }
 
-        var result = await documentService.UploadAsync(file.FileName, content, ct);
+        var result = await documentService.UploadAsync(User.UserId(), file.FileName, content, ct);
         if (result.ErrorCode is not null)
         {
             return Error(StatusCodes.Status422UnprocessableEntity, result.ErrorCode, null);
@@ -48,12 +48,19 @@ public class DocumentsController(
         return CreatedAtAction(nameof(Get), new { id = result.Document!.Id }, result.Document);
     }
 
+    /// <summary>The signed-in user's PDFs ("Τα αρχεία μου"), newest first.</summary>
+    [HttpGet]
+    [ProducesResponseType<IReadOnlyList<DocumentSummaryResponse>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<DocumentSummaryResponse>>> List(CancellationToken ct) =>
+        Ok(await documentService.ListAsync(User.UserId(), ct));
+
+    /// <summary>One of the signed-in user's PDFs; someone else's gives 404 like a missing one.</summary>
     [HttpGet("{id:guid}")]
     [ProducesResponseType<DocumentResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<DocumentResponse>> Get(Guid id, CancellationToken ct)
     {
-        var document = await documentService.GetAsync(id, ct);
+        var document = await documentService.GetAsync(id, User.UserId(), ct);
         return document is null
             ? Error(StatusCodes.Status404NotFound, ErrorCodes.NotFound, null)
             : Ok(document);
@@ -65,7 +72,7 @@ public class DocumentsController(
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<IReadOnlyList<SectionResponse>>> GetSections(Guid id, CancellationToken ct)
     {
-        var sections = await documentService.GetSectionsAsync(id, ct);
+        var sections = await documentService.GetSectionsAsync(id, User.UserId(), ct);
         return sections is null
             ? Error(StatusCodes.Status404NotFound, ErrorCodes.NotFound, null)
             : Ok(sections);

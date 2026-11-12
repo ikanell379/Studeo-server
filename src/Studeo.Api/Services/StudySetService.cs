@@ -23,21 +23,23 @@ public class StudySetService(
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     public async Task<StudySetResult> CreateAsync(
-        CreateStudySetRequest request, IProgress<GenerationProgress>? progress, CancellationToken ct)
+        CreateStudySetRequest request, string ownerId, IProgress<GenerationProgress>? progress, CancellationToken ct)
     {
-        var total = TotalItems(request.Counts);
-        void Report(string stage, int attempt, int done) =>
-            progress?.Report(GenerationProgress.For(stage, attempt, done, total));
-
-        var section = await documents.GetSectionAsync(request.SectionId, ct);
+        var section = await documents.GetSectionAsync(request.SectionId, ownerId, ct);
         if (section is null)
         {
             return new StudySetResult(null, ErrorCodes.NotFound);
         }
 
+        // "full": the amounts follow the section's length; otherwise what the user chose.
+        var counts = request.IsFull ? FullCoverage.CountsFor(section.WordCount) : request.Counts!;
+        var total = TotalItems(counts);
+        void Report(string stage, int attempt, int done) =>
+            progress?.Report(GenerationProgress.For(stage, attempt, done, total));
+
         var pages = await documents.GetPagesAsync(section.DocumentId, section.StartPage, section.EndPage, ct);
         var user = GenerateStudySetPrompt.User(section.Title, SectionText(pages.Select(p => (p.PageNumber, p.Text))),
-            request.Difficulty, request.Counts);
+            request.Difficulty, counts, request.IsFull);
         var schema = GenerateStudySetPrompt.OutputSchema();
 
         StudySet? valid = null;
@@ -61,7 +63,7 @@ public class StudySetService(
 
             (valid, errors) = result.Json is null
                 ? (null, ["The response was empty or cut off."])
-                : await ParseAndValidateAsync(result.Json, request.Counts, section.StartPage, section.EndPage, ct);
+                : await ParseAndValidateAsync(result.Json, counts, section.StartPage, section.EndPage, ct);
 
             if (valid is null)
             {
@@ -83,20 +85,37 @@ public class StudySetService(
         {
             Id = Guid.NewGuid(),
             SectionId = section.Id,
+            Name = NameOrDefault(request.Name, section.Title),
             Difficulty = request.Difficulty,
             Content = JsonSerializer.Serialize(content, Json),
             CreatedAt = now,
             UpdatedAt = now,
         };
         await studySets.AddAsync(entity, ct);
-        return new StudySetResult(ToResponse(entity, content), null);
+        return new StudySetResult(ToResponse(entity, section.DocumentId, content), null);
     }
 
-    public async Task<StudySetResponse?> GetAsync(Guid id, CancellationToken ct)
+    public async Task<StudySetResponse?> GetAsync(Guid id, string ownerId, CancellationToken ct)
     {
-        var entity = await studySets.GetAsync(id, ct);
-        return entity is null ? null : ToResponse(entity, JsonSerializer.Deserialize<StudySet>(entity.Content, Json)!);
+        var entity = await studySets.GetAsync(id, ownerId, ct);
+        return entity is null ? null : ToResponse(entity);
     }
+
+    public async Task<StudySetResponse?> RenameAsync(Guid id, string ownerId, string name, CancellationToken ct)
+    {
+        var entity = await studySets.RenameAsync(id, ownerId, name.Trim(), timeProvider.GetUtcNow(), ct);
+        return entity is null ? null : ToResponse(entity);
+    }
+
+    /// <summary>The user's name, or the section title (cut to the limit) when they gave none.</summary>
+    internal static string NameOrDefault(string? name, string sectionTitle)
+    {
+        var chosen = string.IsNullOrWhiteSpace(name) ? sectionTitle.Trim() : name.Trim();
+        return chosen.Length <= StudySetLimits.MaxNameLength ? chosen : chosen[..StudySetLimits.MaxNameLength];
+    }
+
+    public Task<IReadOnlyList<StudySetSummaryResponse>> ListAsync(string ownerId, CancellationToken ct) =>
+        studySets.ListAsync(ownerId, ct);
 
     internal static int TotalItems(QuestionCounts c) =>
         c.Theory + c.OpenQuestions + c.TrueFalse + c.Matching + c.MultipleChoice + c.FillBlanks;
@@ -150,6 +169,10 @@ public class StudySetService(
 
     private static string NewId() => Guid.NewGuid().ToString("N");
 
-    private static StudySetResponse ToResponse(StudySetEntity e, StudySet content) =>
-        new(e.Id, e.SectionId, e.CreatedAt, e.UpdatedAt, content);
+    private static StudySetResponse ToResponse(StudySetEntity e, Guid documentId, StudySet content) =>
+        new(e.Id, e.SectionId, documentId, e.Name, e.CreatedAt, e.UpdatedAt, content);
+
+    /// <summary>For a stored set loaded with its Section.</summary>
+    private static StudySetResponse ToResponse(StudySetEntity e) =>
+        ToResponse(e, e.Section!.DocumentId, JsonSerializer.Deserialize<StudySet>(e.Content, Json)!);
 }
