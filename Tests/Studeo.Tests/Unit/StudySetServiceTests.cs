@@ -244,14 +244,14 @@ public class StudySetServiceTests
         var garbageWords = Sectioner.CountWords(PageQualityTests.Garbage);
         _section.WordCount = 1200 + garbageWords;
         var expected = FullCoverage.CountsFor(1200);
-        _ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(expected, page: 4))));
+        _ai.AnswersWhatIsAsked(page: 4);
 
         await ServiceWithPages(
                 new DocumentPage { PageNumber = 3, Text = PageQualityTests.Garbage },
                 new DocumentPage { PageNumber = 4, Text = PageQualityTests.NoisyButReadable })
             .CreateAsync(new CreateStudySetRequest(_section.Id, "medium", null, StudySetModes.Full), Owner, null, CancellationToken.None);
 
-        Assert.Contains($"- theory: {expected.Theory}", _ai.Calls.Single().User);
+        Assert.Contains(_ai.Calls, c => c.User.Contains($"- theory: {expected.Theory}"));
     }
 
     [Fact]
@@ -259,19 +259,217 @@ public class StudySetServiceTests
     {
         _section.WordCount = 1200;
         var expected = FullCoverage.CountsFor(1200);
-        _ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(expected, page: 3))));
+        _ai.AnswersWhatIsAsked(page: 3);
         var progress = new RecordingProgress();
 
         var result = await Service().CreateAsync(
             new CreateStudySetRequest(_section.Id, "medium", null, StudySetModes.Full), Owner, progress, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
-        Assert.Equal(expected.Theory, result.StudySet!.Content.Theory.Count);
-        Assert.Equal(expected.FillBlanks, result.StudySet.Content.FillBlanks.Count);
-        var prompt = _ai.Calls.Single().User;
-        Assert.Contains("ΠΛΗΡΟΥΣ ΚΑΛΥΨΗΣ", prompt);
-        Assert.Contains($"- theory: {expected.Theory}", prompt);
+        var content = result.StudySet!.Content;
+        Assert.Equal(expected,
+            new QuestionCounts(content.Theory.Count, content.OpenQuestions.Count, content.TrueFalse.Count, content.Matching.Count,
+                content.MultipleChoice.Count, content.FillBlanks.Count));
+        Assert.All(_ai.Calls, c => Assert.Contains("ΠΛΗΡΟΥΣ ΚΑΛΥΨΗΣ", c.User));
+        Assert.Contains(_ai.Calls, c => c.User.Contains($"- theory: {expected.Theory}"));
         Assert.All(progress.Reports, p => Assert.Equal(StudySetService.TotalItems(expected), p.Total));
+    }
+
+    private static readonly QuestionCounts Large = new(6, 3, 5, 1, 5, 3); // 23 items: written in parts
+
+    [Fact]
+    public void Small_requests_are_one_part_large_ones_three()
+    {
+        Assert.Equal([Counts], StudySetService.Parts(Counts));
+        Assert.Equal(
+            [new QuestionCounts(6, 0, 0, 0, 0, 0), new QuestionCounts(0, 3, 5, 1, 0, 0), new QuestionCounts(0, 0, 0, 0, 5, 3)],
+            StudySetService.Parts(Large));
+        // Only one kind of item: nothing to split.
+        Assert.Equal([new QuestionCounts(15, 0, 0, 0, 0, 0)], StudySetService.Parts(new QuestionCounts(15, 0, 0, 0, 0, 0)));
+        // An empty part is dropped.
+        Assert.Equal(2, StudySetService.Parts(new QuestionCounts(10, 0, 0, 0, 5, 0)).Count);
+    }
+
+    [Fact]
+    public async Task A_large_request_is_written_in_parallel_parts_and_put_together()
+    {
+        _ai.AnswersWhatIsAsked(page: 3);
+        var progress = new RecordingProgress();
+
+        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, progress, CancellationToken.None);
+
+        Assert.Null(result.ErrorCode);
+        Assert.Equal(3, _ai.Calls.Count);
+        Assert.All(_ai.Calls, c => Assert.Contains(GenerateStudySetPrompt.PartOnly.Trim(), c.User));
+        var asked = _ai.Calls.Select(c => TestStudySets.AskedCounts(c.User)).ToList();
+        Assert.Contains(new QuestionCounts(6, 0, 0, 0, 0, 0), asked);
+        Assert.Contains(new QuestionCounts(0, 3, 5, 1, 0, 0), asked);
+        Assert.Contains(new QuestionCounts(0, 0, 0, 0, 5, 3), asked);
+
+        var content = result.StudySet!.Content;
+        Assert.Equal((6, 3, 5, 1, 5, 3),
+            (content.Theory.Count, content.OpenQuestions.Count, content.TrueFalse.Count, content.Matching.Count,
+                content.MultipleChoice.Count, content.FillBlanks.Count));
+        var ids = content.Theory.Select(t => t.Id).Concat(content.MultipleChoice.Select(m => m.Id)).ToList();
+        Assert.Equal(ids.Count, ids.Distinct().Count());
+
+        // One bar for all three parts: up to all 23 items, never back, then saving.
+        AssertNeverGoesBack(progress);
+        Assert.Contains(progress.Reports, p => p.Stage == GenerationProgress.Writing && p.Done == 23);
+        Assert.Equal(GenerationProgress.Saving, progress.Reports[^1].Stage);
+        Assert.Single(_studySets.Saved);
+    }
+
+    /// <summary>Answers what is asked, but with <paramref name="change"/> applied to the amounts (e.g. one short).</summary>
+    private void AnswersWith(Func<QuestionCounts, QuestionCounts> change) =>
+        _ai.Answers(user => AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(change(TestStudySets.AskedCounts(user)), page: 3))));
+
+    [Fact]
+    public async Task Full_mode_accepts_a_few_items_short_without_writing_again()
+    {
+        _section.WordCount = 2000; // full coverage: 10 multiple choice among others
+        AnswersWith(c => c.MultipleChoice > 0 ? c with { MultipleChoice = c.MultipleChoice - 1 } : c);
+
+        var result = await Service().CreateAsync(
+            new CreateStudySetRequest(_section.Id, "medium", null, StudySetModes.Full), Owner, null, CancellationToken.None);
+
+        Assert.Null(result.ErrorCode);
+        Assert.Equal(FullCoverage.CountsFor(2000).MultipleChoice - 1, result.StudySet!.Content.MultipleChoice.Count);
+        Assert.DoesNotContain(_ai.Calls, c => c.User.Contains("απορρίφθηκε")); // no second attempt
+    }
+
+    [Fact]
+    public async Task Full_mode_still_rejects_far_too_few()
+    {
+        _section.WordCount = 2000;
+        AnswersWith(c => c.MultipleChoice > 0 ? c with { MultipleChoice = 2 } : c); // 2 of 10
+
+        var result = await Service().CreateAsync(
+            new CreateStudySetRequest(_section.Id, "medium", null, StudySetModes.Full), Owner, null, CancellationToken.None);
+
+        Assert.Equal(ErrorCodes.AiInvalidOutput, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Chosen_amounts_are_exact_first_but_a_short_retry_is_accepted()
+    {
+        AnswersWith(c => c.MultipleChoice > 0 ? c with { MultipleChoice = c.MultipleChoice - 1 } : c); // always 4 of 5
+
+        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, null, CancellationToken.None);
+
+        Assert.Null(result.ErrorCode);
+        var retried = Assert.Single(_ai.Calls, c => c.User.Contains("απορρίφθηκε"));
+        Assert.Contains("multipleChoice: 4 items, exactly 5 are needed", retried.User);
+        Assert.Equal(4, result.StudySet!.Content.MultipleChoice.Count);
+    }
+
+    [Fact]
+    public async Task Extra_items_are_dropped_instead_of_failing()
+    {
+        AnswersWith(c => c.TrueFalse > 0 ? c with { TrueFalse = c.TrueFalse + 3 } : c);
+
+        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, null, CancellationToken.None);
+
+        Assert.Null(result.ErrorCode);
+        Assert.Equal(Large.TrueFalse, result.StudySet!.Content.TrueFalse.Count);
+        Assert.Equal(3, _ai.Calls.Count); // accepted on the first try
+    }
+
+    [Theory]
+    [InlineData(10, 7)]
+    [InlineData(3, 3)]
+    [InlineData(1, 1)]
+    [InlineData(0, 0)]
+    public void Tolerated_is_70_percent_of_asked_at_least_one(int asked, int min) =>
+        Assert.Equal(min, StudySetService.Tolerated(new QuestionCounts(asked, 0, 0, 0, 0, 0)).Theory);
+
+    [Fact]
+    public async Task The_parts_really_run_at_the_same_time()
+    {
+        var ai = new SlowAiClient(TimeSpan.FromMilliseconds(300));
+        var service = new StudySetService(
+            new FakeDocumentRepository(_section, [new DocumentPage { PageNumber = 3, Text = "Η φωτοσύνθεση." }]),
+            _studySets, ai, new GeneratedStudySetValidator(), TimeProvider.System, NullLogger<StudySetService>.Instance);
+
+        var result = await service.CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, null, CancellationToken.None);
+
+        Assert.Null(result.ErrorCode);
+        Assert.Equal(3, ai.MaxConcurrent);
+    }
+
+    /// <summary>Answers what is asked after a delay, and records how many calls were running at once.</summary>
+    private sealed class SlowAiClient(TimeSpan delay) : IAiClient
+    {
+        private int _running;
+        public int MaxConcurrent { get; private set; }
+
+        public async Task<AiResult> CompleteJsonAsync(string system, string user, JsonObject schema, IAiOutputObserver? output, CancellationToken ct)
+        {
+            var now = Interlocked.Increment(ref _running);
+            lock (this) MaxConcurrent = Math.Max(MaxConcurrent, now);
+            try
+            {
+                await Task.Delay(delay, ct);
+                return AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(TestStudySets.AskedCounts(user), page: 3)));
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _running);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Only_the_part_that_fails_the_check_is_written_again()
+    {
+        var theoryTries = 0;
+        _ai.Answers(user =>
+        {
+            var asked = TestStudySets.AskedCounts(user);
+            // The theory part's first answer has one item too few.
+            if (asked.Theory > 0 && Interlocked.Increment(ref theoryTries) == 1)
+            {
+                asked = asked with { Theory = asked.Theory - 1 };
+            }
+            return AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(asked, page: 3)));
+        });
+
+        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, null, CancellationToken.None);
+
+        Assert.Null(result.ErrorCode);
+        Assert.Equal(4, _ai.Calls.Count); // 3 parts + the theory part once more
+        var retried = Assert.Single(_ai.Calls, c => c.User.Contains("απορρίφθηκε"));
+        Assert.Equal(6, TestStudySets.AskedCounts(retried.User).Theory);
+        Assert.Equal(6, result.StudySet!.Content.Theory.Count);
+    }
+
+    [Fact]
+    public async Task A_part_that_fails_makes_the_whole_request_fail_and_nothing_is_saved()
+    {
+        _ai.Answers(user => TestStudySets.AskedCounts(user).MultipleChoice > 0
+            ? AiResult.Fail(ErrorCodes.AiBusy)
+            : AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(TestStudySets.AskedCounts(user), page: 3))));
+
+        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, null, CancellationToken.None);
+
+        Assert.Equal(ErrorCodes.AiBusy, result.ErrorCode);
+        Assert.Empty(_studySets.Saved);
+    }
+
+    [Fact]
+    public async Task A_part_that_fails_its_check_twice_returns_ai_invalid_output()
+    {
+        _ai.Answers(user =>
+        {
+            var asked = TestStudySets.AskedCounts(user);
+            if (asked.TrueFalse > 0) asked = asked with { TrueFalse = 0 }; // never what was asked
+            return AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(asked, page: 3)));
+        });
+
+        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, null, CancellationToken.None);
+
+        Assert.Equal(ErrorCodes.AiInvalidOutput, result.ErrorCode);
+        Assert.Empty(_studySets.Saved);
     }
 
     [Fact]

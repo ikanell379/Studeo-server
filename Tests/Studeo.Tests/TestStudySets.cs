@@ -36,6 +36,15 @@ public static class TestStudySets
             .Select(i => new FillBlankItem { Sentence = "Το ____ είναι οργανίδιο.", Answer = "μιτοχόνδριο", Page = page }).ToList(),
     };
 
+    /// <summary>The amounts a generation prompt asks for ("- theory: 4" …).</summary>
+    public static QuestionCounts AskedCounts(string userPrompt)
+    {
+        int Asked(string type) =>
+            int.Parse(System.Text.RegularExpressions.Regex.Match(userPrompt, $@"- {type}: (\d+)").Groups[1].Value);
+        return new QuestionCounts(Asked("theory"), Asked("openQuestions"), Asked("trueFalse"), Asked("matching"),
+            Asked("multipleChoice"), Asked("fillBlanks"));
+    }
+
     /// <summary>JSON as the model would return it (no ids).</summary>
     public static string ModelJson(StudySet s) => JsonSerializer.Serialize(s, StudySetJson.Options);
 }
@@ -49,27 +58,56 @@ public static class StudySetJson
 public class FakeAiClient : IAiClient
 {
     private readonly Queue<AiResult> _results = new();
+    private readonly object _gate = new();
+    private Func<string, AiResult>? _answer;
 
+    /// <summary>Every call (system, user prompt). Parts of a large request call in parallel, so the order may vary.</summary>
     public List<(string System, string User)> Calls { get; } = [];
 
     public FakeAiClient Returns(params AiResult[] results)
     {
-        _results.Clear();
-        Calls.Clear();
-        foreach (var r in results)
+        lock (_gate)
         {
-            _results.Enqueue(r);
+            _results.Clear();
+            Calls.Clear();
+            _answer = null;
+            foreach (var r in results)
+            {
+                _results.Enqueue(r);
+            }
         }
         return this;
     }
+
+    /// <summary>Answers each call from its prompt (e.g. valid JSON for exactly the amounts it asks for).</summary>
+    public FakeAiClient Answers(Func<string, AiResult> answer)
+    {
+        lock (_gate)
+        {
+            _results.Clear();
+            Calls.Clear();
+            _answer = answer;
+        }
+        return this;
+    }
+
+    /// <summary>A valid answer for exactly the amounts the prompt asks for, every item on <paramref name="page"/>.</summary>
+    public FakeAiClient AnswersWhatIsAsked(int page) =>
+        Answers(user => AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(TestStudySets.AskedCounts(user), page))));
 
     /// <summary>Size of the pieces the answer is streamed in (small, so keys get split across pieces).</summary>
     public int PieceSize { get; set; } = 7;
 
     public Task<AiResult> CompleteJsonAsync(string system, string user, JsonObject schema, IAiOutputObserver? output, CancellationToken ct)
     {
-        Calls.Add((system, user));
-        var result = _results.Count > 0 ? _results.Dequeue() : AiResult.Fail("no_fake_result");
+        AiResult result;
+        lock (_gate)
+        {
+            Calls.Add((system, user));
+            result = _answer is not null ? _answer(user)
+                : _results.Count > 0 ? _results.Dequeue()
+                : AiResult.Fail("no_fake_result");
+        }
         if (output is not null && result.Json is { } json)
         {
             output.Restart();

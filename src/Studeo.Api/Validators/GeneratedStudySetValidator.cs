@@ -3,20 +3,26 @@ using Studeo.Api.Contracts;
 
 namespace Studeo.Api.Validators;
 
-/// <summary>AI output plus what was asked for, so the validator can check counts and page numbers.</summary>
-public record GeneratedStudySet(StudySet StudySet, QuestionCounts Counts, int StartPage, int EndPage);
+/// <summary>
+/// AI output plus what was asked for, so the validator can check counts and page numbers. Each list must have between
+/// MinCounts (default: exactly Counts) and Counts items.
+/// </summary>
+public record GeneratedStudySet(StudySet StudySet, QuestionCounts Counts, int StartPage, int EndPage, QuestionCounts? MinCounts = null)
+{
+    public QuestionCounts Min => MinCounts ?? Counts;
+}
 
-/// <summary>Validates the model's StudySet against the request: exact counts, non-empty fields, pages inside the section.</summary>
+/// <summary>Validates the model's StudySet against the request: counts, non-empty fields, pages inside the section.</summary>
 public class GeneratedStudySetValidator : AbstractValidator<GeneratedStudySet>
 {
     public GeneratedStudySetValidator()
     {
-        RuleFor(g => g.StudySet.Theory.Count).Equal(g => g.Counts.Theory).WithName("theory count");
-        RuleFor(g => g.StudySet.OpenQuestions.Count).Equal(g => g.Counts.OpenQuestions).WithName("openQuestions count");
-        RuleFor(g => g.StudySet.TrueFalse.Count).Equal(g => g.Counts.TrueFalse).WithName("trueFalse count");
-        RuleFor(g => g.StudySet.Matching.Count).Equal(g => g.Counts.Matching).WithName("matching count");
-        RuleFor(g => g.StudySet.MultipleChoice.Count).Equal(g => g.Counts.MultipleChoice).WithName("multipleChoice count");
-        RuleFor(g => g.StudySet.FillBlanks.Count).Equal(g => g.Counts.FillBlanks).WithName("fillBlanks count");
+        CountRule("theory", s => s.Theory.Count, c => c.Theory);
+        CountRule("openQuestions", s => s.OpenQuestions.Count, c => c.OpenQuestions);
+        CountRule("trueFalse", s => s.TrueFalse.Count, c => c.TrueFalse);
+        CountRule("matching", s => s.Matching.Count, c => c.Matching);
+        CountRule("multipleChoice", s => s.MultipleChoice.Count, c => c.MultipleChoice);
+        CountRule("fillBlanks", s => s.FillBlanks.Count, c => c.FillBlanks);
 
         RuleForEach(g => g.StudySet.Theory).ChildRules(i =>
         {
@@ -76,6 +82,15 @@ public class GeneratedStudySetValidator : AbstractValidator<GeneratedStudySet>
             .WithName("page")
             .WithMessage("Every item's page must be inside the section's page range.");
     }
+
+    /// <summary>"multipleChoice: 9 items, exactly 10 are needed" (the retry note shows it to the model).</summary>
+    private void CountRule(string type, Func<StudySet, int> count, Func<QuestionCounts, int> asked) =>
+        RuleFor(g => g)
+            .Must(g => count(g.StudySet) >= asked(g.Min) && count(g.StudySet) <= asked(g.Counts))
+            .WithName($"{type} count")
+            .WithMessage(g => asked(g.Min) == asked(g.Counts)
+                ? $"{type}: {count(g.StudySet)} items, exactly {asked(g.Counts)} are needed."
+                : $"{type}: {count(g.StudySet)} items, {asked(g.Min)}–{asked(g.Counts)} are needed.");
 
     private static int CountBlanks(string s)
     {

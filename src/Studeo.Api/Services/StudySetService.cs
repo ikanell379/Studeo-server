@@ -44,60 +44,56 @@ public class StudySetService(
         var readableWords = Math.Max(0, section.WordCount - unreadable.Sum(p => Sectioner.CountWords(p.Text)));
         var counts = request.IsFull ? FullCoverage.CountsFor(readableWords) : request.Counts!;
         var total = TotalItems(counts);
+        var parts = Parts(counts);
 
-        // The answer may start over (a broken connection, or a second attempt after a failed check); the bar
-        // must not jump back for that: it holds at the furthest point until the new answer gets past it.
-        var furthest = 0;
-        void Report(string stage, int attempt, int done)
+        // One bar for all parts: the items done in each part added up. A part may start over (a broken connection,
+        // or a second attempt after a failed check); the bar must not jump back for that, so each part counts
+        // with the furthest point it reached. Parts report from different threads.
+        var partDone = new int[parts.Count];
+        var attemptShown = 1;
+        var gate = new object();
+        void Report(int part, int attempt, int done, bool saving = false)
         {
-            furthest = Math.Max(furthest, done);
-            if (stage == GenerationProgress.Reading && furthest > 0)
+            lock (gate)
             {
-                stage = GenerationProgress.Writing;
-            }
-            progress?.Report(GenerationProgress.For(stage, attempt, furthest, total));
-        }
-
-        var user = GenerateStudySetPrompt.User(section.Title, SectionText(pages.Select(p => (p.PageNumber, p.Text))),
-            request.Difficulty, counts, request.IsFull);
-        var schema = GenerateStudySetPrompt.OutputSchema();
-
-        StudySet? valid = null;
-        var usedAttempt = 1;
-        IReadOnlyList<string> errors = [];
-        for (var attempt = 1; attempt <= MaxAttempts && valid is null; attempt++)
-        {
-            usedAttempt = attempt;
-            Report(GenerationProgress.Reading, attempt, 0);
-            var counter = new StudySetItemCounter();
-            var thisAttempt = attempt;
-            counter.Changed += done =>
-                Report(done == 0 ? GenerationProgress.Reading : GenerationProgress.Writing, thisAttempt, done);
-
-            var prompt = attempt == 1 ? user : user + "\n" + GenerateStudySetPrompt.RetryNote(errors);
-            var result = await ai.CompleteJsonAsync(GenerateStudySetPrompt.System, prompt, schema, counter, ct);
-            if (result.ErrorCode is not null && result.ErrorCode != ErrorCodes.AiInvalidOutput)
-            {
-                return new StudySetResult(null, result.ErrorCode);
-            }
-
-            (valid, errors) = result.Json is null
-                ? (null, ["The response was empty or cut off."])
-                : await ParseAndValidateAsync(result.Json, counts, section.StartPage, section.EndPage, ct);
-
-            if (valid is null)
-            {
-                logger.LogWarning("Study set attempt {Attempt} for section {SectionId} failed validation: {Errors}",
-                    attempt, section.Id, string.Join("; ", errors));
+                if (part >= 0) partDone[part] = Math.Max(partDone[part], done);
+                attemptShown = Math.Max(attemptShown, attempt);
+                var sum = partDone.Sum();
+                var stage = saving ? GenerationProgress.Saving
+                    : sum == 0 ? GenerationProgress.Reading
+                    : GenerationProgress.Writing;
+                progress?.Report(GenerationProgress.For(stage, attemptShown, saving ? total : sum, total));
             }
         }
 
-        if (valid is null)
+        var text = SectionText(pages.Select(p => (p.PageNumber, p.Text)));
+        var started = timeProvider.GetTimestamp();
+
+        // Large requests are written in parallel parts (theory / written exercises / quick exercises): the time is
+        // that of the largest part instead of all of them one after the other.
+        using var stopOthers = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var results = await Task.WhenAll(parts.Select((partCounts, i) => GeneratePartAsync(
+            section.Id, section.Title, text, request.Difficulty, partCounts, request.IsFull, isPart: parts.Count > 1,
+            section.StartPage, section.EndPage, (attempt, done) => Report(i, attempt, done), stopOthers)));
+
+        logger.LogInformation("Study set for section {SectionId}: {Items} items in {Parts} part(s), {Seconds:0.0}s.",
+            section.Id, total, parts.Count, timeProvider.GetElapsedTime(started).TotalSeconds);
+
+        // The user left: nothing to save.
+        ct.ThrowIfCancellationRequested();
+
+        // A real error first (not a part that was stopped because another one failed), then a failed check.
+        if (results.FirstOrDefault(r => r.ErrorCode is not null && r.ErrorCode != StoppedCode) is { } failed)
         {
-            return new StudySetResult(null, ErrorCodes.AiInvalidOutput);
+            return new StudySetResult(null, failed.ErrorCode);
+        }
+        if (results.Any(r => r.StudySet is null))
+        {
+            return new StudySetResult(null, ErrorCodes.AiFailed);
         }
 
-        Report(GenerationProgress.Saving, usedAttempt, total);
+        var valid = Merge(results.Select(r => r.StudySet!));
+        Report(-1, 1, total, saving: true);
 
         var content = WithIds(valid with { SectionTitle = section.Title, Difficulty = request.Difficulty });
         var now = timeProvider.GetUtcNow();
@@ -137,6 +133,104 @@ public class StudySetService(
     public Task<IReadOnlyList<StudySetSummaryResponse>> ListAsync(string ownerId, CancellationToken ct) =>
         studySets.ListAsync(ownerId, ct);
 
+    /// <summary>From this many items on, the material is written in parallel parts; smaller requests are one call.</summary>
+    internal const int MinItemsToSplit = 13;
+
+    /// <summary>Marks a part that was stopped because another part failed; never returned to the caller.</summary>
+    private const string StoppedCode = "stopped";
+
+    /// <summary>
+    /// What each parallel call writes: theory; open questions, true/false and matching; multiple choice and
+    /// fill-in-the-blanks. Empty parts are dropped; a small request (or one with a single kind of item) is one part.
+    /// </summary>
+    internal static IReadOnlyList<QuestionCounts> Parts(QuestionCounts c)
+    {
+        if (TotalItems(c) < MinItemsToSplit)
+        {
+            return [c];
+        }
+        QuestionCounts[] parts =
+        [
+            new(c.Theory, 0, 0, 0, 0, 0),
+            new(0, c.OpenQuestions, c.TrueFalse, c.Matching, 0, 0),
+            new(0, 0, 0, 0, c.MultipleChoice, c.FillBlanks),
+        ];
+        var nonEmpty = parts.Where(p => TotalItems(p) > 0).ToList();
+        return nonEmpty.Count > 1 ? nonEmpty : [c];
+    }
+
+    private sealed record PartResult(StudySet? StudySet, string? ErrorCode);
+
+    /// <summary>
+    /// Writes one part: one call plus one retry if its output fails the check. A real error (the service failed,
+    /// refused…) stops the other parts too, since the material can't be completed without this one.
+    /// </summary>
+    private async Task<PartResult> GeneratePartAsync(
+        Guid sectionId, string sectionTitle, string text, string difficulty, QuestionCounts counts, bool full, bool isPart,
+        int startPage, int endPage, Action<int, int> onProgress, CancellationTokenSource stopOthers)
+    {
+        var ct = stopOthers.Token;
+        var user = GenerateStudySetPrompt.User(sectionTitle, text, difficulty, counts, full, isPart);
+        var schema = GenerateStudySetPrompt.OutputSchema();
+        IReadOnlyList<string> errors = [];
+        try
+        {
+            for (var attempt = 1; attempt <= MaxAttempts; attempt++)
+            {
+                onProgress(attempt, 0);
+                var counter = new StudySetItemCounter();
+                var thisAttempt = attempt;
+                counter.Changed += done => onProgress(thisAttempt, done);
+
+                var prompt = attempt == 1 ? user : user + "\n" + GenerateStudySetPrompt.RetryNote(errors);
+                var result = await ai.CompleteJsonAsync(GenerateStudySetPrompt.System, prompt, schema, counter, ct);
+                if (result.ErrorCode is not null && result.ErrorCode != ErrorCodes.AiInvalidOutput)
+                {
+                    await stopOthers.CancelAsync();
+                    return new PartResult(null, result.ErrorCode);
+                }
+
+                // Full coverage: the amounts are only an estimate from the length, so a few items short is fine.
+                // Amounts the user chose: exact on the first try; the retry may be a little short rather than fail.
+                var min = full || attempt == MaxAttempts ? Tolerated(counts) : counts;
+                StudySet? valid;
+                (valid, errors) = result.Json is null
+                    ? (null, ["The response was empty or cut off."])
+                    : await ParseAndValidateAsync(result.Json, counts, min, startPage, endPage, ct);
+                if (valid is not null)
+                {
+                    return new PartResult(valid, null);
+                }
+                logger.LogWarning("Study set attempt {Attempt} for section {SectionId} ({Counts}) failed validation: {Errors}",
+                    attempt, sectionId, counts, string.Join("; ", errors));
+            }
+            await stopOthers.CancelAsync();
+            return new PartResult(null, ErrorCodes.AiInvalidOutput);
+        }
+        catch (OperationCanceledException) when (stopOthers.IsCancellationRequested)
+        {
+            // Another part failed (or the user left): this one's result isn't needed.
+            return new PartResult(null, StoppedCode);
+        }
+    }
+
+    /// <summary>The parts' items put together, each kind in the order it was written.</summary>
+    internal static StudySet Merge(IEnumerable<StudySet> parts)
+    {
+        var all = parts.ToList();
+        return new StudySet
+        {
+            SectionTitle = all[0].SectionTitle,
+            Difficulty = all[0].Difficulty,
+            Theory = all.SelectMany(p => p.Theory).ToList(),
+            OpenQuestions = all.SelectMany(p => p.OpenQuestions).ToList(),
+            TrueFalse = all.SelectMany(p => p.TrueFalse).ToList(),
+            Matching = all.SelectMany(p => p.Matching).ToList(),
+            MultipleChoice = all.SelectMany(p => p.MultipleChoice).ToList(),
+            FillBlanks = all.SelectMany(p => p.FillBlanks).ToList(),
+        };
+    }
+
     internal static int TotalItems(QuestionCounts c) =>
         c.Theory + c.OpenQuestions + c.TrueFalse + c.Matching + c.MultipleChoice + c.FillBlanks;
 
@@ -153,8 +247,29 @@ public class StudySetService(
         return sb.ToString().TrimEnd();
     }
 
+    /// <summary>The least accepted when a few items short is fine: 70% of each kind asked for (at least 1).</summary>
+    internal const double MinShareOfAsked = 0.7;
+
+    internal static QuestionCounts Tolerated(QuestionCounts c)
+    {
+        static int Min(int asked) => asked == 0 ? 0 : Math.Max(1, (int)Math.Ceiling(asked * MinShareOfAsked));
+        return new QuestionCounts(Min(c.Theory), Min(c.OpenQuestions), Min(c.TrueFalse), Min(c.Matching),
+            Min(c.MultipleChoice), Min(c.FillBlanks));
+    }
+
+    /// <summary>Extra items (more than asked for) are dropped instead of failing the check.</summary>
+    internal static StudySet AtMost(StudySet s, QuestionCounts c) => s with
+    {
+        Theory = s.Theory.Take(c.Theory).ToList(),
+        OpenQuestions = s.OpenQuestions.Take(c.OpenQuestions).ToList(),
+        TrueFalse = s.TrueFalse.Take(c.TrueFalse).ToList(),
+        Matching = s.Matching.Take(c.Matching).ToList(),
+        MultipleChoice = s.MultipleChoice.Take(c.MultipleChoice).ToList(),
+        FillBlanks = s.FillBlanks.Take(c.FillBlanks).ToList(),
+    };
+
     private async Task<(StudySet?, IReadOnlyList<string>)> ParseAndValidateAsync(
-        string json, QuestionCounts counts, int startPage, int endPage, CancellationToken ct)
+        string json, QuestionCounts counts, QuestionCounts min, int startPage, int endPage, CancellationToken ct)
     {
         StudySet? parsed;
         try
@@ -170,7 +285,8 @@ public class StudySetService(
             return (null, ["Invalid JSON: null."]);
         }
 
-        var validation = await outputValidator.ValidateAsync(new GeneratedStudySet(parsed, counts, startPage, endPage), ct);
+        parsed = AtMost(parsed, counts);
+        var validation = await outputValidator.ValidateAsync(new GeneratedStudySet(parsed, counts, startPage, endPage, min), ct);
         return validation.IsValid
             ? (parsed, [])
             : (null, validation.Errors.Select(e => $"{e.PropertyName}: {e.ErrorMessage}").ToList());
