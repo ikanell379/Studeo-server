@@ -41,7 +41,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(ValidJson());
 
-        var result = await Service().CreateAsync(Request(), CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), null, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         var content = result.StudySet!.Content;
@@ -63,7 +63,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(ValidJson());
 
-        await Service().CreateAsync(Request(), CancellationToken.None);
+        await Service().CreateAsync(Request(), null, CancellationToken.None);
 
         var (system, user) = Assert.Single(_ai.Calls);
         Assert.Equal(GenerateStudySetPrompt.System, system);
@@ -79,7 +79,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(ValidJson(page: 9), ValidJson());
 
-        var result = await Service().CreateAsync(Request(), CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), null, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         Assert.Equal(2, _ai.Calls.Count);
@@ -92,7 +92,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(AiResult.Ok("{not json"), ValidJson(page: 9));
 
-        var result = await Service().CreateAsync(Request(), CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), null, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.AiInvalidOutput, result.ErrorCode);
         Assert.Equal(StudySetService.MaxAttempts, _ai.Calls.Count);
@@ -104,7 +104,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(AiResult.Fail(ErrorCodes.AiInvalidOutput), ValidJson());
 
-        var result = await Service().CreateAsync(Request(), CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), null, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         Assert.Equal(2, _ai.Calls.Count);
@@ -118,7 +118,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(AiResult.Fail(code), ValidJson());
 
-        var result = await Service().CreateAsync(Request(), CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), null, CancellationToken.None);
 
         Assert.Equal(code, result.ErrorCode);
         Assert.Single(_ai.Calls);
@@ -127,7 +127,7 @@ public class StudySetServiceTests
     [Fact]
     public async Task Unknown_section_returns_not_found_without_calling_ai()
     {
-        var result = await Service().CreateAsync(new CreateStudySetRequest(Guid.NewGuid(), "easy", Counts), CancellationToken.None);
+        var result = await Service().CreateAsync(new CreateStudySetRequest(Guid.NewGuid(), "easy", Counts), null, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
         Assert.Empty(_ai.Calls);
@@ -138,7 +138,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(ValidJson());
         var service = Service();
-        var created = (await service.CreateAsync(Request(), CancellationToken.None)).StudySet!;
+        var created = (await service.CreateAsync(Request(), null, CancellationToken.None)).StudySet!;
 
         var fetched = await service.GetAsync(created.Id, CancellationToken.None);
 
@@ -171,12 +171,52 @@ public class StudySetServiceTests
     }
 
     [Fact]
+    public async Task Reports_real_progress_item_by_item_then_saving()
+    {
+        _ai.Returns(ValidJson());
+        var progress = new RecordingProgress();
+
+        var result = await Service().CreateAsync(Request(), progress, CancellationToken.None);
+
+        Assert.Null(result.ErrorCode);
+        var total = StudySetService.TotalItems(Counts);
+        var writing = progress.Reports.Where(p => p.Stage == GenerationProgress.Writing).Select(p => p.Done).ToList();
+        Assert.Equal(GenerationProgress.Reading, progress.Reports[0].Stage);
+        Assert.Equal(Enumerable.Range(1, total), writing); // every finished item, in order
+        Assert.Equal(GenerationProgress.Saving, progress.Reports[^1].Stage);
+        Assert.All(progress.Reports, p => Assert.Equal(total, p.Total));
+        var percents = progress.Reports.Select(p => p.Percent).ToList();
+        Assert.Equal(percents.Order(), percents); // only goes up
+        Assert.Equal(95, percents[^1]);
+    }
+
+    [Fact]
+    public async Task Second_attempt_starts_progress_again_as_attempt_2()
+    {
+        _ai.Returns(AiResult.Ok("{\"theory\":[{\"page\":1}]}"), ValidJson());
+        var progress = new RecordingProgress();
+
+        await Service().CreateAsync(Request(), progress, CancellationToken.None);
+
+        var second = progress.Reports.SkipWhile(p => p.Attempt == 1).ToList();
+        Assert.Equal(new GenerationProgress(GenerationProgress.Reading, 2, 0, StudySetService.TotalItems(Counts), 3), second[0]);
+        Assert.Equal(GenerationProgress.Saving, second[^1].Stage);
+        Assert.Equal(2, second[^1].Attempt);
+    }
+
+    private sealed class RecordingProgress : IProgress<GenerationProgress>
+    {
+        public List<GenerationProgress> Reports { get; } = [];
+        public void Report(GenerationProgress value) => Reports.Add(value);
+    }
+
+    [Fact]
     public async Task Anthropic_client_without_key_returns_ai_not_configured()
     {
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Anthropic:ApiKey"] = "" }).Build();
         using var client = new AnthropicAiClient(config, NullLogger<AnthropicAiClient>.Instance);
 
-        var result = await client.CompleteJsonAsync("s", "u", GenerateStudySetPrompt.OutputSchema(), CancellationToken.None);
+        var result = await client.CompleteJsonAsync("s", "u", GenerateStudySetPrompt.OutputSchema(), null, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.AiNotConfigured, result.ErrorCode);
     }

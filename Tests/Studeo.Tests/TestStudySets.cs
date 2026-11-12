@@ -63,9 +63,18 @@ public class FakeAiClient : IAiClient
         return this;
     }
 
-    public Task<AiResult> CompleteJsonAsync(string system, string user, JsonObject schema, CancellationToken ct)
+    /// <summary>Size of the pieces the answer is streamed in (small, so keys get split across pieces).</summary>
+    public int PieceSize { get; set; } = 7;
+
+    public Task<AiResult> CompleteJsonAsync(string system, string user, JsonObject schema, IAiOutputObserver? output, CancellationToken ct)
     {
         Calls.Add((system, user));
-        return Task.FromResult(_results.Count > 0 ? _results.Dequeue() : AiResult.Fail("no_fake_result"));
+        var result = _results.Count > 0 ? _results.Dequeue() : AiResult.Fail("no_fake_result");
+        if (output is not null && result.Json is { } json)
+        {
+            output.Restart();
+            for (var i = 0; i < json.Length; i += PieceSize) output.Append(json.Substring(i, Math.Min(PieceSize, json.Length - i)));
+        }
+        return Task.FromResult(result);
     }
 }

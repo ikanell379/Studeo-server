@@ -13,6 +13,7 @@ namespace Studeo.Tests.Unit;
 public class GeminiAiClientTests
 {
     private readonly FakeHandler _handler = new();
+    private readonly RecordingObserver _seen = new();
 
     private GeminiAiClient Client(string? apiKey = "test-key", string? model = null, string? fallback = null) =>
         new(new HttpClient(_handler), new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
@@ -28,18 +29,22 @@ public class GeminiAiClientTests
 
     private const string Busy = "{\"error\":{\"code\":503,\"message\":\"high demand\",\"status\":\"UNAVAILABLE\"}}";
 
-    private static string Candidate(string finishReason, params object[] parts) => new JsonObject
+    private static string Candidate(string? finishReason, params object[] parts)
     {
-        ["candidates"] = new JsonArray(new JsonObject
+        var candidate = new JsonObject
         {
             ["content"] = new JsonObject { ["role"] = "model", ["parts"] = JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(parts)) },
-            ["finishReason"] = finishReason,
-        }),
-        ["usageMetadata"] = new JsonObject { ["promptTokenCount"] = 10, ["candidatesTokenCount"] = 20 },
-    }.ToJsonString();
+        };
+        if (finishReason is not null) candidate["finishReason"] = finishReason;
+        return new JsonObject
+        {
+            ["candidates"] = new JsonArray(candidate),
+            ["usageMetadata"] = new JsonObject { ["promptTokenCount"] = 10, ["candidatesTokenCount"] = 20 },
+        }.ToJsonString();
+    }
 
     private Task<AiResult> Call(GeminiAiClient client) =>
-        client.CompleteJsonAsync("system text", "user text", GenerateStudySetPrompt.OutputSchema(), CancellationToken.None);
+        client.CompleteJsonAsync("system text", "user text", GenerateStudySetPrompt.OutputSchema(), _seen, CancellationToken.None);
 
     [Fact]
     public async Task Sends_generate_content_with_schema_key_and_system_instruction()
@@ -50,7 +55,7 @@ public class GeminiAiClientTests
 
         var request = Assert.Single(_handler.Requests);
         Assert.Equal(HttpMethod.Post, request.Method);
-        Assert.Equal($"{GeminiAiClient.BaseUrl}models/gemini-test:generateContent", request.Uri);
+        Assert.Equal($"{GeminiAiClient.BaseUrl}models/gemini-test:streamGenerateContent?alt=sse", request.Uri);
         Assert.Equal("test-key", request.ApiKey);
         var body = JsonNode.Parse(request.Body)!;
         Assert.Equal("system text", (string?)body["systemInstruction"]!["parts"]![0]!["text"]);
@@ -68,6 +73,31 @@ public class GeminiAiClientTests
 
         Assert.Null(result.ErrorCode);
         Assert.Equal("{\"a\":1}", result.Json);
+    }
+
+    [Fact]
+    public async Task Streamed_pieces_are_joined_and_passed_on_as_they_arrive()
+    {
+        _handler.RespondStream(
+            Candidate(null, new { text = "thinking…", thought = true }),
+            Candidate(null, new { text = "{\"a\":" }),
+            Candidate("STOP", new { text = "1}" }));
+
+        var result = await Call(Client());
+
+        Assert.Equal("{\"a\":1}", result.Json);
+        Assert.Equal(["restart", "{\"a\":", "1}"], _seen.Events);
+    }
+
+    [Fact]
+    public async Task A_retry_restarts_the_observer()
+    {
+        _handler.Respond(HttpStatusCode.ServiceUnavailable, Busy);
+        _handler.Then(HttpStatusCode.OK, Candidate("STOP", new { text = "{}" }));
+
+        await Call(Client());
+
+        Assert.Equal(["restart", "restart", "{}"], _seen.Events);
     }
 
     [Fact]
@@ -206,6 +236,13 @@ public class GeminiAiClientTests
         Assert.IsType(expected, provider_.GetRequiredService<IAiClient>());
     }
 
+    private sealed class RecordingObserver : IAiOutputObserver
+    {
+        public List<string> Events { get; } = [];
+        public void Restart() => Events.Add("restart");
+        public void Append(string text) => Events.Add(text);
+    }
+
     /// <summary>Answers with queued responses; the last one repeats. A null status hangs until cancelled.</summary>
     private sealed class FakeHandler : HttpMessageHandler
     {
@@ -220,6 +257,13 @@ public class GeminiAiClientTests
         }
 
         public void Then(HttpStatusCode status, string body) => _responses.Add((status, body));
+
+        /// <summary>A 200 with several server-sent events (one JSON chunk each).</summary>
+        public void RespondStream(params string[] chunks)
+        {
+            _responses.Clear();
+            _responses.Add((HttpStatusCode.OK, string.Concat(chunks.Select(c => $"data: {c}\r\n\r\n"))));
+        }
 
         public void Hang()
         {
@@ -238,6 +282,11 @@ public class GeminiAiClientTests
             if (status is null)
             {
                 await Task.Delay(Timeout.Infinite, ct);
+            }
+            // A 200 is a server-sent-event stream; a single JSON body becomes one event.
+            if (status == HttpStatusCode.OK && !body.StartsWith("data:", StringComparison.Ordinal))
+            {
+                body = $"data: {body}\r\n\r\n";
             }
             return new HttpResponseMessage(status!.Value) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         }

@@ -22,8 +22,13 @@ public class StudySetService(
 
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    public async Task<StudySetResult> CreateAsync(CreateStudySetRequest request, CancellationToken ct)
+    public async Task<StudySetResult> CreateAsync(
+        CreateStudySetRequest request, IProgress<GenerationProgress>? progress, CancellationToken ct)
     {
+        var total = TotalItems(request.Counts);
+        void Report(string stage, int attempt, int done) =>
+            progress?.Report(GenerationProgress.For(stage, attempt, done, total));
+
         var section = await documents.GetSectionAsync(request.SectionId, ct);
         if (section is null)
         {
@@ -36,11 +41,19 @@ public class StudySetService(
         var schema = GenerateStudySetPrompt.OutputSchema();
 
         StudySet? valid = null;
+        var usedAttempt = 1;
         IReadOnlyList<string> errors = [];
         for (var attempt = 1; attempt <= MaxAttempts && valid is null; attempt++)
         {
+            usedAttempt = attempt;
+            Report(GenerationProgress.Reading, attempt, 0);
+            var counter = new StudySetItemCounter();
+            var thisAttempt = attempt;
+            counter.Changed += done =>
+                Report(done == 0 ? GenerationProgress.Reading : GenerationProgress.Writing, thisAttempt, done);
+
             var prompt = attempt == 1 ? user : user + "\n" + GenerateStudySetPrompt.RetryNote(errors);
-            var result = await ai.CompleteJsonAsync(GenerateStudySetPrompt.System, prompt, schema, ct);
+            var result = await ai.CompleteJsonAsync(GenerateStudySetPrompt.System, prompt, schema, counter, ct);
             if (result.ErrorCode is not null && result.ErrorCode != ErrorCodes.AiInvalidOutput)
             {
                 return new StudySetResult(null, result.ErrorCode);
@@ -62,6 +75,8 @@ public class StudySetService(
             return new StudySetResult(null, ErrorCodes.AiInvalidOutput);
         }
 
+        Report(GenerationProgress.Saving, usedAttempt, total);
+
         var content = WithIds(valid with { SectionTitle = section.Title, Difficulty = request.Difficulty });
         var now = timeProvider.GetUtcNow();
         var entity = new StudySetEntity
@@ -82,6 +97,9 @@ public class StudySetService(
         var entity = await studySets.GetAsync(id, ct);
         return entity is null ? null : ToResponse(entity, JsonSerializer.Deserialize<StudySet>(entity.Content, Json)!);
     }
+
+    internal static int TotalItems(QuestionCounts c) =>
+        c.Theory + c.OpenQuestions + c.TrueFalse + c.Matching + c.MultipleChoice + c.FillBlanks;
 
     /// <summary>Section text with page markers, e.g. "[σελ. 12]", as the prompt expects.</summary>
     internal static string SectionText(IEnumerable<(int Page, string Text)> pages)
