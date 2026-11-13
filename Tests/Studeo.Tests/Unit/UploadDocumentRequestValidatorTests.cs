@@ -21,8 +21,9 @@ public class UploadDocumentRequestValidatorTests
     [InlineData(null, 0, ErrorCodes.FileMissing)]
     [InlineData("notes.pdf", 0, ErrorCodes.FileEmpty)]
     [InlineData("notes.pdf", DocumentLimits.MaxFileBytes + 1, ErrorCodes.FileTooLarge)]
-    [InlineData("notes.docx", 1000, ErrorCodes.NotPdf)]
-    [InlineData("notes", 1000, ErrorCodes.NotPdf)]
+    [InlineData("notes.doc", 1000, ErrorCodes.UnsupportedFile)]
+    [InlineData("slides.pps", 1000, ErrorCodes.UnsupportedFile)]
+    [InlineData("notes", 1000, ErrorCodes.UnsupportedFile)]
     public void Invalid_files_fail_with_code(string? name, long length, string code)
     {
         var request = new UploadDocumentRequest { File = name is null ? null : File(name, length) };

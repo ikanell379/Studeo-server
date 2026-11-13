@@ -9,8 +9,9 @@ public static class ErrorCodes
     public const string FileMissing = "file_missing";
     public const string FileEmpty = "file_empty";
     public const string FileTooLarge = "file_too_large";
-    public const string NotPdf = "not_pdf";
-    public const string InvalidPdf = "invalid_pdf";
+    public const string UnsupportedFile = "unsupported_file";
+    /// <summary>The file is damaged, password-protected, or not what its extension says.</summary>
+    public const string InvalidFile = "invalid_file";
     public const string TooManyPages = "too_many_pages";
     public const string NoText = "no_text";
     public const string NotFound = "not_found";

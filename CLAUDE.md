@@ -7,7 +7,8 @@ Backend repo of Studeo. Shared rules and the product spec are in the parent fold
 - Entity Framework Core 10 with PostgreSQL (Npgsql)
 - FluentValidation for request validation and for validating AI output
 - Swagger for API documentation
-- PdfPig (PDF text per page), QuestPDF (PDF export, Greek font embedded)
+- PdfPig (PDF text per page), DocumentFormat.OpenXml (.docx/.pptx text, and Word export), OpenMcdf (.ppt container), QuestPDF (PDF export, Greek font embedded)
+- Uploads: PDF, Word (.docx) and PowerPoint (.pptx, and 97–2003 .ppt), picked by extension (`Contracts/DocumentKind`, `Services/DocumentTextExtractor`). A slide is a page (title first, speaker notes last); a .docx is split at Word's rendered page breaks, or into ~500-word pages when it has none, and its Heading 1–3 paragraphs are the sections. A .ppt is read from its binary records (OpenMcdf for the OLE container, `Services/PptTextExtractor`); `samples/slides-el.ppt` was saved by PowerPoint. Legacy .doc is not accepted.
 - Anthropic API called only from Services
 - Keycloak (OIDC) for sign-in; JWT bearer auth, realm roles `teacher` / `student`
 

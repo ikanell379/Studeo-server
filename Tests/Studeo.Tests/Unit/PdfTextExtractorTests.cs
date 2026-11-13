@@ -56,7 +56,7 @@ public class PdfTextExtractorTests
     {
         var result = _extractor.Extract(Encoding.UTF8.GetBytes("just some text"), 50);
 
-        Assert.Equal(ErrorCodes.InvalidPdf, result.ErrorCode);
+        Assert.Equal(ErrorCodes.InvalidFile, result.ErrorCode);
     }
 
     [Fact]
@@ -64,7 +64,7 @@ public class PdfTextExtractorTests
     {
         var result = _extractor.Extract(Encoding.ASCII.GetBytes("%PDF-1.7\n garbage garbage"), 50);
 
-        Assert.Equal(ErrorCodes.InvalidPdf, result.ErrorCode);
+        Assert.Equal(ErrorCodes.InvalidFile, result.ErrorCode);
     }
 
     /// <summary>

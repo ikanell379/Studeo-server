@@ -7,9 +7,9 @@ namespace Studeo.Tests.Unit;
 
 public class DocumentServiceTests
 {
-    private sealed class FakeExtractor(PdfExtractionResult result) : IPdfTextExtractor
+    private sealed class FakeExtractor(TextExtractionResult result) : IDocumentTextExtractor
     {
-        public PdfExtractionResult Extract(byte[] pdf, int maxPages) => result;
+        public TextExtractionResult Extract(string fileName, byte[] content, int maxPages) => result;
     }
 
     private sealed class FakeRepository : IDocumentRepository
@@ -77,7 +77,7 @@ public class DocumentServiceTests
 
     private static readonly string TextPage = new('α', DocumentLimits.MinLettersPerPage);
 
-    private static (DocumentService Service, FakeRepository Repo) Create(PdfExtractionResult extraction)
+    private static (DocumentService Service, FakeRepository Repo) Create(TextExtractionResult extraction)
     {
         var repo = new FakeRepository();
         return (new DocumentService(new FakeExtractor(extraction), new Sectioner(), repo, new FakeCourseRepository(), TimeProvider.System), repo);
@@ -86,7 +86,7 @@ public class DocumentServiceTests
     [Fact]
     public async Task Same_file_twice_is_a_duplicate_and_saved_once()
     {
-        var (service, repo) = Create(new PdfExtractionResult([TextPage], null));
+        var (service, repo) = Create(new TextExtractionResult([TextPage], null));
         var first = await service.UploadAsync(Owner, "a.pdf", [1, 2, 3], null, CancellationToken.None);
 
         var again = await service.UploadAsync(Owner, "b.pdf", [1, 2, 3], OwnersCourse, CancellationToken.None);
@@ -98,9 +98,9 @@ public class DocumentServiceTests
     }
 
     /// <summary>Text that depends on the file's last byte, so different files have different text.</summary>
-    private sealed class ByContentExtractor : IPdfTextExtractor
+    private sealed class ByContentExtractor : IDocumentTextExtractor
     {
-        public PdfExtractionResult Extract(byte[] pdf, int maxPages) => new([TextPage + pdf[^1], TextPage], null);
+        public TextExtractionResult Extract(string fileName, byte[] content, int maxPages) => new([TextPage + content[^1], TextPage], null);
     }
 
     [Fact]
@@ -125,7 +125,7 @@ public class DocumentServiceTests
     public async Task Same_text_in_another_file_is_a_duplicate()
     {
         // e.g. the PDF saved again, or one stored before file hashes existed (only its text hash is known).
-        var (service, repo) = Create(new PdfExtractionResult([TextPage, TextPage], null));
+        var (service, repo) = Create(new TextExtractionResult([TextPage, TextPage], null));
         var first = await service.UploadAsync(Owner, "notes.pdf", [1, 2, 3], null, CancellationToken.None);
         repo.Added[0].ContentHash = null;
 
@@ -146,7 +146,7 @@ public class DocumentServiceTests
     [Fact]
     public async Task Upload_into_own_course_only()
     {
-        var (service, repo) = Create(new PdfExtractionResult([TextPage], null));
+        var (service, repo) = Create(new TextExtractionResult([TextPage], null));
 
         var inCourse = await service.UploadAsync(Owner, "a.pdf", [1], OwnersCourse, CancellationToken.None);
         var notMine = await service.UploadAsync(Owner, "b.pdf", [2], Guid.NewGuid(), CancellationToken.None);
@@ -159,7 +159,7 @@ public class DocumentServiceTests
     [Fact]
     public async Task Move_files_the_pdf_under_a_course_and_back_out()
     {
-        var (service, _) = Create(new PdfExtractionResult([TextPage], null));
+        var (service, _) = Create(new TextExtractionResult([TextPage], null));
         var uploaded = await service.UploadAsync(Owner, "a.pdf", [1], null, CancellationToken.None);
 
         var moved = await service.MoveAsync(uploaded.Document!.Id, Owner, OwnersCourse, CancellationToken.None);
@@ -174,7 +174,7 @@ public class DocumentServiceTests
     [Fact]
     public async Task Saves_document_with_numbered_pages()
     {
-        var (service, repo) = Create(new PdfExtractionResult([TextPage, TextPage], null));
+        var (service, repo) = Create(new TextExtractionResult([TextPage, TextPage], null));
 
         var result = await service.UploadAsync(Owner, @"C:\fakepath\notes.pdf", [], null, CancellationToken.None);
 
@@ -189,7 +189,7 @@ public class DocumentServiceTests
     [Fact]
     public async Task Someone_elses_document_is_not_found()
     {
-        var (service, _) = Create(new PdfExtractionResult([TextPage], null));
+        var (service, _) = Create(new TextExtractionResult([TextPage], null));
         var uploaded = await service.UploadAsync(Owner, "a.pdf", [], null, CancellationToken.None);
 
         Assert.Null(await service.GetAsync(uploaded.Document!.Id, "someone-else", CancellationToken.None));
@@ -201,7 +201,7 @@ public class DocumentServiceTests
     {
         var page1 = "Κεφάλαιο 1: Αρχές\n" + TextPage;
         var page2 = "Κεφάλαιο 2: Εφαρμογές\n" + TextPage;
-        var (service, _) = Create(new PdfExtractionResult([page1, page2], null));
+        var (service, _) = Create(new TextExtractionResult([page1, page2], null));
         var uploaded = await service.UploadAsync(Owner, "a.pdf", [], null, CancellationToken.None);
 
         var sections = await service.GetSectionsAsync(uploaded.Document!.Id, Owner, CancellationToken.None);
@@ -235,7 +235,7 @@ public class DocumentServiceTests
     [Fact]
     public async Task GetSections_of_unknown_document_returns_null()
     {
-        var (service, _) = Create(new PdfExtractionResult([], null));
+        var (service, _) = Create(new TextExtractionResult([], null));
 
         Assert.Null(await service.GetSectionsAsync(Guid.NewGuid(), Owner, CancellationToken.None));
     }
@@ -243,7 +243,7 @@ public class DocumentServiceTests
     [Fact]
     public async Task Returns_extractor_error_and_saves_nothing()
     {
-        var (service, repo) = Create(PdfExtractionResult.Fail(ErrorCodes.TooManyPages));
+        var (service, repo) = Create(TextExtractionResult.Fail(ErrorCodes.TooManyPages));
 
         var result = await service.UploadAsync(Owner, "a.pdf", [], null, CancellationToken.None);
 
@@ -254,7 +254,7 @@ public class DocumentServiceTests
     [Fact]
     public async Task Scanned_pdf_without_text_returns_no_text()
     {
-        var (service, repo) = Create(new PdfExtractionResult(["", " 12 ", ""], null));
+        var (service, repo) = Create(new TextExtractionResult(["", " 12 ", ""], null));
 
         var result = await service.UploadAsync(Owner, "scan.pdf", [], null, CancellationToken.None);
 

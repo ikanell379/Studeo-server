@@ -5,7 +5,7 @@ using Studeo.Api.Repositories;
 namespace Studeo.Api.Services;
 
 public class DocumentService(
-    IPdfTextExtractor extractor,
+    IDocumentTextExtractor extractor,
     ISectioner sectioner,
     IDocumentRepository repository,
     ICourseRepository courses,
@@ -21,7 +21,7 @@ public class DocumentService(
             return new UploadDocumentResult(null, ErrorCodes.NotFound);
         }
 
-        // A PDF the user already has: tell them instead of storing it twice.
+        // A file the user already has: tell them instead of storing it twice.
         // First the very same file (cheap, before extracting), then the same text (re-saved PDF, or one stored
         // before file hashes existed).
         var hash = ContentHash(content);
@@ -30,7 +30,7 @@ public class DocumentService(
             return new UploadDocumentResult(null, ErrorCodes.DuplicateDocument, ToResponse(sameFile));
         }
 
-        var extraction = extractor.Extract(content, DocumentLimits.MaxPages);
+        var extraction = extractor.Extract(fileName, content, DocumentLimits.MaxPages);
         if (extraction.ErrorCode is not null)
         {
             return new UploadDocumentResult(null, extraction.ErrorCode);
@@ -129,7 +129,7 @@ public class DocumentService(
         return sections;
     }
 
-    /// <summary>A scanned PDF has (almost) no extractable letters.</summary>
+    /// <summary>A scanned PDF (or slides of pictures) has (almost) no extractable letters.</summary>
     internal static bool HasEnoughText(IReadOnlyList<string> pages)
     {
         if (pages.Count == 0)

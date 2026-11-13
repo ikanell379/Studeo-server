@@ -5,7 +5,7 @@ namespace Studeo.Api.Services;
 public interface IDocumentService
 {
     /// <summary>
-    /// Extracts and stores a PDF for <paramref name="ownerId"/> (the uploading user), optionally in one of their courses.
+    /// Extracts and stores a PDF, Word document or presentation for <paramref name="ownerId"/> (the uploading user), optionally in one of their courses.
     /// If they uploaded the same file before, nothing is stored: ErrorCode duplicate_document with the stored one in Existing.
     /// </summary>
     Task<UploadDocumentResult> UploadAsync(string ownerId, string fileName, byte[] content, Guid? courseId, CancellationToken ct);

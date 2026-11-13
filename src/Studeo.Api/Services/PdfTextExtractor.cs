@@ -9,11 +9,11 @@ namespace Studeo.Api.Services;
 
 public partial class PdfTextExtractor(ILogger<PdfTextExtractor> logger) : IPdfTextExtractor
 {
-    public PdfExtractionResult Extract(byte[] pdf, int maxPages)
+    public TextExtractionResult Extract(byte[] pdf, int maxPages)
     {
         if (!HasPdfHeader(pdf))
         {
-            return PdfExtractionResult.Fail(ErrorCodes.InvalidPdf);
+            return TextExtractionResult.Fail(ErrorCodes.InvalidFile);
         }
 
         try
@@ -22,7 +22,7 @@ public partial class PdfTextExtractor(ILogger<PdfTextExtractor> logger) : IPdfTe
 
             if (document.NumberOfPages > maxPages)
             {
-                return PdfExtractionResult.Fail(ErrorCodes.TooManyPages);
+                return TextExtractionResult.Fail(ErrorCodes.TooManyPages);
             }
 
             var pages = new List<string>(document.NumberOfPages);
@@ -33,13 +33,13 @@ public partial class PdfTextExtractor(ILogger<PdfTextExtractor> logger) : IPdfTe
                 headings.AddRange(StyledHeadings(page));
             }
 
-            return new PdfExtractionResult(pages, null) { Headings = headings };
+            return new TextExtractionResult(pages, null) { Headings = headings };
         }
         catch (Exception ex)
         {
             // PdfPig throws various exception types for corrupt or encrypted files.
             logger.LogWarning(ex, "Could not read PDF");
-            return PdfExtractionResult.Fail(ErrorCodes.InvalidPdf);
+            return TextExtractionResult.Fail(ErrorCodes.InvalidFile);
         }
     }
 

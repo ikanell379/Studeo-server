@@ -8,7 +8,7 @@ public class UploadDocumentRequestValidator : AbstractValidator<UploadDocumentRe
     public UploadDocumentRequestValidator()
     {
         RuleFor(r => r.File)
-            .NotNull().WithErrorCode(ErrorCodes.FileMissing).WithMessage("A PDF file is required.");
+            .NotNull().WithErrorCode(ErrorCodes.FileMissing).WithMessage("A PDF, Word (.docx) or PowerPoint (.pptx, .ppt) file is required.");
 
         When(r => r.File is not null, () =>
         {
@@ -18,8 +18,9 @@ public class UploadDocumentRequestValidator : AbstractValidator<UploadDocumentRe
                 .WithMessage("The file is larger than 20 MB.");
 
             RuleFor(r => r.File!.FileName)
-                .Must(name => string.Equals(Path.GetExtension(name), ".pdf", StringComparison.OrdinalIgnoreCase))
-                .WithErrorCode(ErrorCodes.NotPdf).WithMessage("Only PDF files are accepted.");
+                .Must(name => DocumentKinds.FromFileName(name) is not null)
+                .WithErrorCode(ErrorCodes.UnsupportedFile)
+                .WithMessage("Only PDF, Word (.docx) and PowerPoint (.pptx, .ppt) files are accepted.");
         });
     }
 }

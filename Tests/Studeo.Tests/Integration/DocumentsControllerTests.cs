@@ -46,6 +46,76 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
         Assert.Contains("Η φωτοσύνθεση πραγματοποιείται στους χλωροπλάστες", pages[2].Text);
     }
 
+    private const string DocxType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    private const string PptxType = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
+    private static string Words(int count) => string.Join(' ', Enumerable.Repeat("φωτοσύνθεση", count));
+
+    [Fact]
+    public async Task Upload_word_document_is_split_into_pages_and_sections_by_its_headings()
+    {
+        var client = factory.CreateClientAs(TestUser.NewStudent());
+        var docx = TestOfficeFiles.Docx(
+            TestOfficeFiles.H1("Το κύτταρο"),
+            TestOfficeFiles.Text(Words(400)),
+            TestOfficeFiles.H1("Η φωτοσύνθεση"),
+            TestOfficeFiles.Text(Words(400)));
+
+        var response = await client.PostAsync("/api/documents", Form(docx, "biology.docx", DocxType));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<DocumentResponse>();
+        Assert.Equal(("biology.docx", 2), (document!.FileName, document.PageCount));
+        var sections = await client.GetFromJsonAsync<List<SectionResponse>>($"/api/documents/{document.Id}/sections");
+        Assert.Equal(
+            [("Ολόκληρο το κείμενο", 1, 2), ("Το κύτταρο", 1, 1), ("Η φωτοσύνθεση", 2, 2)],
+            sections!.Select(s => (s.Title, s.StartPage, s.EndPage)));
+    }
+
+    [Fact]
+    public async Task Upload_presentation_stores_one_page_per_slide()
+    {
+        var client = factory.CreateClientAs(TestUser.NewStudent());
+        var pptx = TestOfficeFiles.Pptx(
+            new TestOfficeFiles.Slide("Το κύτταρο", [Words(40)]),
+            new TestOfficeFiles.Slide("Το κύτταρο", [Words(40)]),
+            new TestOfficeFiles.Slide("Η φωτοσύνθεση", [Words(40)]),
+            new TestOfficeFiles.Slide("Η φωτοσύνθεση", [Words(40)]));
+
+        var response = await client.PostAsync("/api/documents", Form(pptx, "biology.pptx", PptxType));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<DocumentResponse>();
+        Assert.Equal(4, document!.PageCount);
+        var sections = await client.GetFromJsonAsync<List<SectionResponse>>($"/api/documents/{document.Id}/sections");
+        Assert.Equal(["Ολόκληρο το κείμενο", "Το κύτταρο", "Η φωτοσύνθεση"], sections!.Select(s => s.Title));
+    }
+
+    [Fact]
+    public async Task Upload_powerpoint_97_presentation_stores_one_page_per_slide()
+    {
+        var client = factory.CreateClientAs(TestUser.NewStudent());
+        var ppt = await File.ReadAllBytesAsync(Path.Combine(AppContext.BaseDirectory, "samples", "slides-el.ppt"));
+
+        var response = await client.PostAsync("/api/documents", Form(ppt, "slides-el.ppt", "application/vnd.ms-powerpoint"));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<DocumentResponse>();
+        Assert.Equal(4, document!.PageCount);
+        var sections = await client.GetFromJsonAsync<List<SectionResponse>>($"/api/documents/{document.Id}/sections");
+        Assert.Equal(["Ολόκληρο το κείμενο", "Το κύτταρο", "Η φωτοσύνθεση"], sections!.Select(s => s.Title));
+    }
+
+    [Fact]
+    public async Task Upload_pdf_renamed_to_docx_returns_invalid_file()
+    {
+        var response = await factory.CreateClientAs(TestUser.NewStudent())
+            .PostAsync("/api/documents", Form(TestPdfs.GreekSample(), "biology.docx", DocxType));
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal(ErrorCodes.InvalidFile, await ErrorCode(response));
+    }
+
     [Fact]
     public async Task Get_returns_uploaded_document()
     {
@@ -290,21 +360,21 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     }
 
     [Fact]
-    public async Task Upload_non_pdf_extension_returns_not_pdf()
+    public async Task Upload_unsupported_extension_returns_unsupported_file()
     {
         var response = await factory.CreateClientAs(TestUser.NewStudent()).PostAsync("/api/documents", Form("hello"u8.ToArray(), "notes.txt", "text/plain"));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal(ErrorCodes.NotPdf, await ErrorCode(response));
+        Assert.Equal(ErrorCodes.UnsupportedFile, await ErrorCode(response));
     }
 
     [Fact]
-    public async Task Upload_fake_pdf_returns_invalid_pdf()
+    public async Task Upload_fake_pdf_returns_invalid_file()
     {
         var response = await factory.CreateClientAs(TestUser.NewStudent()).PostAsync("/api/documents", Form("not really a pdf"u8.ToArray(), "fake.pdf"));
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
-        Assert.Equal(ErrorCodes.InvalidPdf, await ErrorCode(response));
+        Assert.Equal(ErrorCodes.InvalidFile, await ErrorCode(response));
     }
 
     [Fact]
