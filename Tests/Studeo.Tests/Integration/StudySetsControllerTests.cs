@@ -49,6 +49,29 @@ public class StudySetsControllerTests(StudeoApiFactory factory) : IClassFixture<
     }
 
     [Fact]
+    public async Task Students_get_a_lesson_with_flashcards_which_they_can_write_again()
+    {
+        var client = factory.CreateClientAs(TestUser.NewStudent());
+        var section = await UploadAndGetSecondSection(client);
+        factory.Ai.Returns(AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(Counts, page: 3))));
+
+        var created = await (await client.PostAsJsonAsync("/api/study-sets", new CreateStudySetRequest(section.Id, "easy", Counts)))
+            .Content.ReadFromJsonAsync<StudySetResponse>();
+        factory.Ai.Lesson = () => AiResult.Ok(JsonSerializer.Serialize(
+            TestStudySets.ValidLesson(4) with { Intro = "Νέα εισαγωγή." }, StudySetJson.Options));
+        var rewritten = await client.PostAsync($"/api/study-sets/{created!.Id}/lesson", null);
+        var fetched = await client.GetFromJsonAsync<StudySetResponse>($"/api/study-sets/{created.Id}");
+        var teacherCall = await factory.CreateClientAs(TestUser.NewTeacher()).PostAsync($"/api/study-sets/{created.Id}/lesson", null);
+        factory.Ai.Lesson = () => AiResult.Ok(JsonSerializer.Serialize(TestStudySets.ValidLesson(3), StudySetJson.Options));
+
+        Assert.Equal(6, created.Content.Lesson!.Flashcards.Count);
+        Assert.Null(created.Content.TeachingGuide);
+        Assert.Equal(HttpStatusCode.OK, rewritten.StatusCode);
+        Assert.Equal("Νέα εισαγωγή.", fetched!.Content.Lesson!.Intro);
+        Assert.Equal(HttpStatusCode.Forbidden, teacherCall.StatusCode);
+    }
+
+    [Fact]
     public async Task Create_with_invalid_ai_output_twice_returns_422()
     {
         var client = factory.CreateClientAs(TestUser.NewStudent());

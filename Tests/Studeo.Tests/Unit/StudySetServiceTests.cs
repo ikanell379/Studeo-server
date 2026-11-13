@@ -34,10 +34,13 @@ public class StudySetServiceTests
             new DocumentPage { PageNumber = 3, Text = "Η φωτοσύνθεση γίνεται στους χλωροπλάστες." },
             new DocumentPage { PageNumber = 4, Text = "Παράγεται οξυγόνο." },
         ]),
-        _studySets, _ai, new GeneratedStudySetValidator(), Guides(_ai), TimeProvider.System, NullLogger<StudySetService>.Instance);
+        _studySets, _ai, new GeneratedStudySetValidator(), Guides(_ai), Lessons(_ai), TimeProvider.System, NullLogger<StudySetService>.Instance);
 
     private static TeachingGuideGenerator Guides(IAiClient ai) =>
         new(ai, new GeneratedTeachingGuideValidator(), NullLogger<TeachingGuideGenerator>.Instance);
+
+    private static StudentLessonGenerator Lessons(IAiClient ai) =>
+        new(ai, new GeneratedStudentLessonValidator(), NullLogger<StudentLessonGenerator>.Instance);
 
     private CreateStudySetRequest Request() => new(_section.Id, "hard", Counts);
 
@@ -49,7 +52,7 @@ public class StudySetServiceTests
         _ai.Returns(ValidJson());
         var progress = new RecordingProgress();
 
-        var result = await Service().CreateAsync(Request(), Owner, true, progress, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), Owner, MaterialExtra.TeachingGuide, progress, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         var guide = result.StudySet!.Content.TeachingGuide;
@@ -61,14 +64,53 @@ public class StudySetServiceTests
     }
 
     [Fact]
-    public async Task Students_get_no_guide()
+    public async Task Without_an_extra_there_is_no_guide_or_lesson()
     {
         _ai.Returns(ValidJson());
 
-        var result = await Service().CreateAsync(Request(), Owner, false, null, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Null(result.StudySet!.Content.TeachingGuide);
+        Assert.Null(result.StudySet.Content.Lesson);
         Assert.Empty(_ai.GuideCalls);
+        Assert.Empty(_ai.LessonCalls);
+    }
+
+    [Fact]
+    public async Task For_a_student_the_lesson_is_written_alongside_and_saved()
+    {
+        _ai.Returns(ValidJson());
+
+        var result = await Service().CreateAsync(Request(), Owner, MaterialExtra.Lesson, null, CancellationToken.None);
+
+        Assert.Null(result.ErrorCode);
+        var lesson = result.StudySet!.Content.Lesson;
+        Assert.NotNull(lesson);
+        Assert.Equal(6, lesson.Flashcards.Count);
+        Assert.Null(result.StudySet.Content.TeachingGuide);
+        Assert.Contains("[σελ. 3]", Assert.Single(_ai.LessonCalls));
+        Assert.Empty(_ai.GuideCalls);
+        Assert.Contains("\"flashcards\"", _studySets.Saved.Single().Content);
+    }
+
+    [Fact]
+    public async Task A_failed_lesson_does_not_lose_the_questions_and_can_be_written_later()
+    {
+        _ai.Returns(ValidJson());
+        _ai.Lesson = () => AiResult.Fail(ErrorCodes.AiBusy);
+
+        var created = await Service().CreateAsync(Request(), Owner, MaterialExtra.Lesson, null, CancellationToken.None);
+        Assert.Null(created.ErrorCode);
+        Assert.Null(created.StudySet!.Content.Lesson);
+
+        _ai.Lesson = () => AiResult.Ok(System.Text.Json.JsonSerializer.Serialize(TestStudySets.ValidLesson(4), StudySetJson.Options));
+        var later = await Service().AddLessonAsync(created.StudySet.Id, Owner, CancellationToken.None);
+        var otherUser = await Service().AddLessonAsync(created.StudySet.Id, "someone-else", CancellationToken.None);
+
+        Assert.Null(later.ErrorCode);
+        Assert.Equal(4, later.StudySet!.Content.Lesson!.Steps[0].Page);
+        Assert.Equal(created.StudySet.Content.TrueFalse.Select(t => t.Id), later.StudySet.Content.TrueFalse.Select(t => t.Id));
+        Assert.Equal(ErrorCodes.NotFound, otherUser.ErrorCode);
     }
 
     [Fact]
@@ -77,7 +119,7 @@ public class StudySetServiceTests
         _ai.Returns(ValidJson());
         _ai.Guide = () => AiResult.Ok("{}");
 
-        var created = await Service().CreateAsync(Request(), Owner, true, null, CancellationToken.None);
+        var created = await Service().CreateAsync(Request(), Owner, MaterialExtra.TeachingGuide, null, CancellationToken.None);
         Assert.Null(created.ErrorCode);
         Assert.Null(created.StudySet!.Content.TeachingGuide);
 
@@ -97,7 +139,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(ValidJson());
 
-        var result = await Service().CreateAsync(Request(), Owner, false, null, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         var content = result.StudySet!.Content;
@@ -119,7 +161,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(ValidJson());
 
-        await Service().CreateAsync(Request(), Owner, false, null, CancellationToken.None);
+        await Service().CreateAsync(Request(), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         var (system, user) = Assert.Single(_ai.Calls);
         Assert.Equal(GenerateStudySetPrompt.System, system);
@@ -135,7 +177,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(ValidJson(page: 9), ValidJson());
 
-        var result = await Service().CreateAsync(Request(), Owner, false, null, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         Assert.Equal(2, _ai.Calls.Count);
@@ -148,7 +190,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(AiResult.Ok("{not json"), ValidJson(page: 9));
 
-        var result = await Service().CreateAsync(Request(), Owner, false, null, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.AiInvalidOutput, result.ErrorCode);
         Assert.Equal(StudySetService.MaxAttempts, _ai.Calls.Count);
@@ -160,7 +202,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(AiResult.Fail(ErrorCodes.AiInvalidOutput), ValidJson());
 
-        var result = await Service().CreateAsync(Request(), Owner, false, null, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         Assert.Equal(2, _ai.Calls.Count);
@@ -174,7 +216,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(AiResult.Fail(code), ValidJson());
 
-        var result = await Service().CreateAsync(Request(), Owner, false, null, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Equal(code, result.ErrorCode);
         Assert.Single(_ai.Calls);
@@ -183,7 +225,7 @@ public class StudySetServiceTests
     [Fact]
     public async Task Unknown_section_returns_not_found_without_calling_ai()
     {
-        var result = await Service().CreateAsync(new CreateStudySetRequest(Guid.NewGuid(), "easy", Counts), Owner, false, null, CancellationToken.None);
+        var result = await Service().CreateAsync(new CreateStudySetRequest(Guid.NewGuid(), "easy", Counts), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
         Assert.Empty(_ai.Calls);
@@ -192,7 +234,7 @@ public class StudySetServiceTests
     [Fact]
     public async Task Section_of_someone_elses_document_returns_not_found_without_calling_ai()
     {
-        var result = await Service().CreateAsync(Request(), "someone-else", false, null, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), "someone-else", MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
         Assert.Empty(_ai.Calls);
@@ -203,9 +245,9 @@ public class StudySetServiceTests
     public async Task Material_is_named_by_the_user_or_after_its_section()
     {
         _ai.Returns(ValidJson());
-        var named = await Service().CreateAsync(Request() with { Name = "  Επανάληψη για το τεστ  " }, Owner, false, null, CancellationToken.None);
+        var named = await Service().CreateAsync(Request() with { Name = "  Επανάληψη για το τεστ  " }, Owner, MaterialExtra.None, null, CancellationToken.None);
         _ai.Returns(ValidJson());
-        var unnamed = await Service().CreateAsync(Request() with { Name = "   " }, Owner, false, null, CancellationToken.None);
+        var unnamed = await Service().CreateAsync(Request() with { Name = "   " }, Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Equal("Επανάληψη για το τεστ", named.StudySet!.Name);
         Assert.Equal("Κεφάλαιο 2: Η φωτοσύνθεση", unnamed.StudySet!.Name);
@@ -225,7 +267,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(ValidJson());
         var service = Service();
-        var created = (await service.CreateAsync(Request(), Owner, false, null, CancellationToken.None)).StudySet!;
+        var created = (await service.CreateAsync(Request(), Owner, MaterialExtra.None, null, CancellationToken.None)).StudySet!;
 
         var fetched = await service.GetAsync(created.Id, Owner, CancellationToken.None);
 
@@ -259,7 +301,7 @@ public class StudySetServiceTests
 
     private StudySetService ServiceWithPages(params DocumentPage[] pages) => new(
         new FakeDocumentRepository(_section, [.. pages]),
-        _studySets, _ai, new GeneratedStudySetValidator(), Guides(_ai), TimeProvider.System, NullLogger<StudySetService>.Instance);
+        _studySets, _ai, new GeneratedStudySetValidator(), Guides(_ai), Lessons(_ai), TimeProvider.System, NullLogger<StudySetService>.Instance);
 
     [Fact]
     public async Task Unreadable_pages_are_left_out_of_the_prompt()
@@ -269,7 +311,7 @@ public class StudySetServiceTests
         var result = await ServiceWithPages(
                 new DocumentPage { PageNumber = 3, Text = PageQualityTests.Garbage },
                 new DocumentPage { PageNumber = 4, Text = PageQualityTests.NoisyButReadable })
-            .CreateAsync(Request(), Owner, false, null, CancellationToken.None);
+            .CreateAsync(Request(), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         var prompt = _ai.Calls.Single().User;
         Assert.DoesNotContain("[σελ. 3]", prompt);
@@ -284,7 +326,7 @@ public class StudySetServiceTests
         var result = await ServiceWithPages(
                 new DocumentPage { PageNumber = 3, Text = PageQualityTests.Garbage },
                 new DocumentPage { PageNumber = 4, Text = PageQualityTests.Garbage })
-            .CreateAsync(Request(), Owner, false, null, CancellationToken.None);
+            .CreateAsync(Request(), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.NoText, result.ErrorCode);
         Assert.Empty(_ai.Calls);
@@ -301,7 +343,7 @@ public class StudySetServiceTests
         await ServiceWithPages(
                 new DocumentPage { PageNumber = 3, Text = PageQualityTests.Garbage },
                 new DocumentPage { PageNumber = 4, Text = PageQualityTests.NoisyButReadable })
-            .CreateAsync(new CreateStudySetRequest(_section.Id, "medium", null, StudySetModes.Full), Owner, false, null, CancellationToken.None);
+            .CreateAsync(new CreateStudySetRequest(_section.Id, "medium", null, StudySetModes.Full), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Contains(_ai.Calls, c => c.User.Contains($"- theory: {expected.Theory}"));
     }
@@ -315,7 +357,7 @@ public class StudySetServiceTests
         var progress = new RecordingProgress();
 
         var result = await Service().CreateAsync(
-            new CreateStudySetRequest(_section.Id, "medium", null, StudySetModes.Full), Owner, false, progress, CancellationToken.None);
+            new CreateStudySetRequest(_section.Id, "medium", null, StudySetModes.Full), Owner, MaterialExtra.None, progress, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         var content = result.StudySet!.Content;
@@ -348,7 +390,7 @@ public class StudySetServiceTests
         _ai.AnswersWhatIsAsked(page: 3);
         var progress = new RecordingProgress();
 
-        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, false, progress, CancellationToken.None);
+        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, MaterialExtra.None, progress, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         Assert.Equal(3, _ai.Calls.Count);
@@ -383,7 +425,7 @@ public class StudySetServiceTests
         AnswersWith(c => c.MultipleChoice > 0 ? c with { MultipleChoice = c.MultipleChoice - 1 } : c);
 
         var result = await Service().CreateAsync(
-            new CreateStudySetRequest(_section.Id, "medium", null, StudySetModes.Full), Owner, false, null, CancellationToken.None);
+            new CreateStudySetRequest(_section.Id, "medium", null, StudySetModes.Full), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         Assert.Equal(FullCoverage.CountsFor(2000).MultipleChoice - 1, result.StudySet!.Content.MultipleChoice.Count);
@@ -397,7 +439,7 @@ public class StudySetServiceTests
         AnswersWith(c => c.MultipleChoice > 0 ? c with { MultipleChoice = 2 } : c); // 2 of 10
 
         var result = await Service().CreateAsync(
-            new CreateStudySetRequest(_section.Id, "medium", null, StudySetModes.Full), Owner, false, null, CancellationToken.None);
+            new CreateStudySetRequest(_section.Id, "medium", null, StudySetModes.Full), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.AiInvalidOutput, result.ErrorCode);
     }
@@ -407,7 +449,7 @@ public class StudySetServiceTests
     {
         AnswersWith(c => c.MultipleChoice > 0 ? c with { MultipleChoice = c.MultipleChoice - 1 } : c); // always 4 of 5
 
-        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, false, null, CancellationToken.None);
+        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         var retried = Assert.Single(_ai.Calls, c => c.User.Contains("απορρίφθηκε"));
@@ -420,7 +462,7 @@ public class StudySetServiceTests
     {
         AnswersWith(c => c.TrueFalse > 0 ? c with { TrueFalse = c.TrueFalse + 3 } : c);
 
-        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, false, null, CancellationToken.None);
+        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         Assert.Equal(Large.TrueFalse, result.StudySet!.Content.TrueFalse.Count);
@@ -441,9 +483,9 @@ public class StudySetServiceTests
         var ai = new SlowAiClient(TimeSpan.FromMilliseconds(300));
         var service = new StudySetService(
             new FakeDocumentRepository(_section, [new DocumentPage { PageNumber = 3, Text = "Η φωτοσύνθεση." }]),
-            _studySets, ai, new GeneratedStudySetValidator(), Guides(ai), TimeProvider.System, NullLogger<StudySetService>.Instance);
+            _studySets, ai, new GeneratedStudySetValidator(), Guides(ai), Lessons(ai), TimeProvider.System, NullLogger<StudySetService>.Instance);
 
-        var result = await service.CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, false, null, CancellationToken.None);
+        var result = await service.CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         Assert.Equal(3, ai.MaxConcurrent);
@@ -486,7 +528,7 @@ public class StudySetServiceTests
             return AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(asked, page: 3)));
         });
 
-        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, false, null, CancellationToken.None);
+        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         Assert.Equal(4, _ai.Calls.Count); // 3 parts + the theory part once more
@@ -502,7 +544,7 @@ public class StudySetServiceTests
             ? AiResult.Fail(ErrorCodes.AiBusy)
             : AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(TestStudySets.AskedCounts(user), page: 3))));
 
-        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, false, null, CancellationToken.None);
+        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.AiBusy, result.ErrorCode);
         Assert.Empty(_studySets.Saved);
@@ -518,7 +560,7 @@ public class StudySetServiceTests
             return AiResult.Ok(TestStudySets.ModelJson(TestStudySets.Valid(asked, page: 3)));
         });
 
-        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, false, null, CancellationToken.None);
+        var result = await Service().CreateAsync(new CreateStudySetRequest(_section.Id, "hard", Large), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.AiInvalidOutput, result.ErrorCode);
         Assert.Empty(_studySets.Saved);
@@ -529,7 +571,7 @@ public class StudySetServiceTests
     {
         _ai.Returns(ValidJson());
 
-        await Service().CreateAsync(Request(), Owner, false, null, CancellationToken.None);
+        await Service().CreateAsync(Request(), Owner, MaterialExtra.None, null, CancellationToken.None);
 
         Assert.DoesNotContain("ΠΛΗΡΟΥΣ ΚΑΛΥΨΗΣ", _ai.Calls.Single().User);
     }
@@ -540,7 +582,7 @@ public class StudySetServiceTests
         _ai.Returns(ValidJson());
         var progress = new RecordingProgress();
 
-        var result = await Service().CreateAsync(Request(), Owner, false, progress, CancellationToken.None);
+        var result = await Service().CreateAsync(Request(), Owner, MaterialExtra.None, progress, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         var total = StudySetService.TotalItems(Counts);
@@ -560,7 +602,7 @@ public class StudySetServiceTests
         _ai.Returns(AiResult.Ok("{\"theory\":[{\"page\":1}]}"), ValidJson());
         var progress = new RecordingProgress();
 
-        await Service().CreateAsync(Request(), Owner, false, progress, CancellationToken.None);
+        await Service().CreateAsync(Request(), Owner, MaterialExtra.None, progress, CancellationToken.None);
 
         var second = progress.Reports.SkipWhile(p => p.Attempt == 1).ToList();
         // The first answer got one item done: the second one starts there (writing 1 of N), not back at "reading".
@@ -581,9 +623,9 @@ public class StudySetServiceTests
         var service = new StudySetService(
             new FakeDocumentRepository(_section,
                 [new DocumentPage { PageNumber = 3, Text = "Η φωτοσύνθεση." }, new DocumentPage { PageNumber = 4, Text = "Οξυγόνο." }]),
-            _studySets, ai, new GeneratedStudySetValidator(), Guides(ai), TimeProvider.System, NullLogger<StudySetService>.Instance);
+            _studySets, ai, new GeneratedStudySetValidator(), Guides(ai), Lessons(ai), TimeProvider.System, NullLogger<StudySetService>.Instance);
 
-        var result = await service.CreateAsync(Request(), Owner, false, progress, CancellationToken.None);
+        var result = await service.CreateAsync(Request(), Owner, MaterialExtra.None, progress, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         AssertNeverGoesBack(progress);

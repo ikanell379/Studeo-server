@@ -39,6 +39,7 @@ builder.Services.AddScoped<IDocumentService, DocumentService>();
 builder.Services.AddScoped<ICourseService, CourseService>();
 builder.Services.AddAiClient(builder.Configuration); // "Ai:Provider": Claude | Gemini
 builder.Services.AddScoped<ITeachingGuideGenerator, TeachingGuideGenerator>();
+builder.Services.AddScoped<IStudentLessonGenerator, StudentLessonGenerator>();
 builder.Services.AddScoped<IStudySetService, StudySetService>();
 builder.Services.AddScoped<ITestExportService, TestExportService>();
 builder.Services.AddHttpClient<IKeycloakClient, KeycloakClient>();

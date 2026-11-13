@@ -42,15 +42,20 @@ public class StudySetStreamTests(StudeoApiFactory factory) : IClassFixture<Stude
         Assert.Equal("application/x-ndjson", response.Content.Headers.ContentType?.MediaType);
         var events = await Events(response);
         var progress = events.Where(e => e.Type == "progress").Select(e => e.Progress!).ToList();
-        var total = Counts.Theory + Counts.OpenQuestions + Counts.TrueFalse + Counts.Matching + Counts.MultipleChoice + Counts.FillBlanks;
+        // The student's lesson is written alongside the questions and counts as a few items on the bar.
+        var total = StudySetService.TotalItems(Counts) + StudySetService.GuideProgressWeight;
 
         Assert.Equal(GenerationProgress.Reading, progress[0].Stage);
-        Assert.Equal(Enumerable.Range(1, total), progress.Where(p => p.Stage == GenerationProgress.Writing).Select(p => p.Done));
+        Assert.All(progress, p => Assert.Equal(total, p.Total));
+        var writing = progress.Where(p => p.Stage == GenerationProgress.Writing).Select(p => p.Done).ToList();
+        Assert.Equal(writing.Order(), writing); // never goes back
+        Assert.Equal(total, writing[^1]);
         Assert.Equal(GenerationProgress.Saving, progress[^1].Stage);
 
         var done = events[^1];
         Assert.Equal("done", done.Type);
         Assert.Equal(section.Id, done.StudySet!.SectionId);
+        Assert.NotNull(done.StudySet.Content.Lesson);
         var stored = await client.GetFromJsonAsync<StudySetResponse>($"/api/study-sets/{done.StudySet.Id}");
         Assert.Equal(done.StudySet.Content.Theory.Select(t => t.Id), stored!.Content.Theory.Select(t => t.Id));
     }

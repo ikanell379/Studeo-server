@@ -40,7 +40,7 @@ public class StudySetsController(
             return Error(StatusCodes.Status400BadRequest, ErrorCodes.InvalidRequest, first.ErrorMessage);
         }
 
-        var result = await studySetService.CreateAsync(request, User.UserId(), IsTeacher, null, ct);
+        var result = await studySetService.CreateAsync(request, User.UserId(), Extra, null, ct);
         if (result.ErrorCode is not null)
         {
             return Error(StatusFor(result.ErrorCode), result.ErrorCode, null);
@@ -75,7 +75,7 @@ public class StudySetsController(
 
         // Progress is reported from inside the generation; a channel hands it to this loop, which writes it out.
         var ownerId = User.UserId();
-        var withGuide = IsTeacher;
+        var extra = Extra;
         var events = Channel.CreateUnbounded<GenerationEvent>(new UnboundedChannelOptions { SingleReader = true });
         var progress = new ChannelProgress(events.Writer);
 
@@ -83,7 +83,7 @@ public class StudySetsController(
         {
             try
             {
-                var result = await studySetService.CreateAsync(request, ownerId, withGuide, progress, ct);
+                var result = await studySetService.CreateAsync(request, ownerId, extra, progress, ct);
                 events.Writer.TryWrite(result.ErrorCode is null
                     ? GenerationEvent.Done(result.StudySet!)
                     : GenerationEvent.Error(result.ErrorCode));
@@ -177,6 +177,24 @@ public class StudySetsController(
     }
 
     /// <summary>
+    /// Students: writes (or rewrites) the lesson with flashcards, e.g. for material made before lessons existed or
+    /// when the lesson failed during generation. Can take a minute.
+    /// </summary>
+    [HttpPost("{id:guid}/lesson")]
+    [Authorize(Roles = Roles.Student)]
+    [ProducesResponseType<StudySetResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status422UnprocessableEntity)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status503ServiceUnavailable)]
+    public async Task<ActionResult<StudySetResponse>> CreateLesson(Guid id, CancellationToken ct)
+    {
+        var result = await studySetService.AddLessonAsync(id, User.UserId(), ct);
+        return result.ErrorCode is not null
+            ? Error(StatusFor(result.ErrorCode), result.ErrorCode, null)
+            : Ok(result.StudySet);
+    }
+
+    /// <summary>
     /// Teachers: the test as a file, PDF or Word (.docx): the worksheet (name / class / date, no answers) or the
     /// answer key, with the chosen question types and, optionally, the source page of each question.
     /// </summary>
@@ -200,7 +218,8 @@ public class StudySetsController(
             : File(file.Content, file.ContentType, file.FileName);
     }
 
-    private bool IsTeacher => Roles.Of(User) == Roles.Teacher;
+    /// <summary>Teachers get the guide on how to teach the section; students a lesson with flashcards.</summary>
+    private MaterialExtra Extra => Roles.Of(User) == Roles.Teacher ? MaterialExtra.TeachingGuide : MaterialExtra.Lesson;
 
     private static int StatusFor(string code) => code switch
     {

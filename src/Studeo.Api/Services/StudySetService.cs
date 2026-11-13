@@ -15,6 +15,7 @@ public class StudySetService(
     IAiClient ai,
     IValidator<GeneratedStudySet> outputValidator,
     ITeachingGuideGenerator guides,
+    IStudentLessonGenerator lessons,
     TimeProvider timeProvider,
     ILogger<StudySetService> logger) : IStudySetService
 {
@@ -24,7 +25,7 @@ public class StudySetService(
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     public async Task<StudySetResult> CreateAsync(
-        CreateStudySetRequest request, string ownerId, bool withTeachingGuide, IProgress<GenerationProgress>? progress,
+        CreateStudySetRequest request, string ownerId, MaterialExtra extra, IProgress<GenerationProgress>? progress,
         CancellationToken ct)
     {
         var section = await documents.GetSectionAsync(request.SectionId, ownerId, ct);
@@ -46,8 +47,9 @@ public class StudySetService(
         var readableWords = Math.Max(0, section.WordCount - unreadable.Sum(p => Sectioner.CountWords(p.Text)));
         var counts = request.IsFull ? FullCoverage.CountsFor(readableWords) : request.Counts!;
         var parts = Parts(counts);
-        // The teacher's guide is written alongside the questions; on the bar it counts as a few items.
-        var total = TotalItems(counts) + (withTeachingGuide ? GuideProgressWeight : 0);
+        // The teacher's guide (or the student's lesson) is written alongside the questions; on the bar it counts as a
+        // few items.
+        var total = TotalItems(counts) + (extra != MaterialExtra.None ? GuideProgressWeight : 0);
         var guidePart = parts.Count;
 
         // One bar for all parts: the items done in each part added up. A part may start over (a broken connection,
@@ -77,14 +79,26 @@ public class StudySetService(
         // Large requests are written in parallel parts (theory / written exercises / quick exercises): the time is
         // that of the largest part instead of all of them one after the other.
         using var stopOthers = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var guideTask = withTeachingGuide
-            ? GenerateGuideAsync(section.Title, text, readableWords, request.Difficulty, section.StartPage, section.EndPage,
-                () => Report(guidePart, 1, GuideProgressWeight), stopOthers.Token)
+        void ExtraDone() => Report(guidePart, 1, GuideProgressWeight);
+        var guideTask = extra == MaterialExtra.TeachingGuide
+            ? OptionalAsync("Teaching guide", section.Title, async c =>
+            {
+                var r = await guides.GenerateAsync(section.Title, text, readableWords, request.Difficulty, section.StartPage, section.EndPage, c);
+                return (r.Guide, r.ErrorCode);
+            }, ExtraDone, stopOthers.Token)
             : Task.FromResult<TeachingGuide?>(null);
+        var lessonTask = extra == MaterialExtra.Lesson
+            ? OptionalAsync("Lesson", section.Title, async c =>
+            {
+                var r = await lessons.GenerateAsync(section.Title, text, readableWords, request.Difficulty, section.StartPage, section.EndPage, c);
+                return (r.Lesson, r.ErrorCode);
+            }, ExtraDone, stopOthers.Token)
+            : Task.FromResult<StudentLesson?>(null);
         var results = await Task.WhenAll(parts.Select((partCounts, i) => GeneratePartAsync(
             section.Id, section.Title, text, request.Difficulty, partCounts, request.IsFull, isPart: parts.Count > 1,
             section.StartPage, section.EndPage, (attempt, done) => Report(i, attempt, done), stopOthers)));
         var guide = await guideTask;
+        var lesson = await lessonTask;
 
         logger.LogInformation("Study set for section {SectionId}: {Items} items in {Parts} part(s), {Seconds:0.0}s.",
             section.Id, total, parts.Count, timeProvider.GetElapsedTime(started).TotalSeconds);
@@ -105,7 +119,10 @@ public class StudySetService(
         var valid = Merge(results.Select(r => r.StudySet!));
         Report(-1, 1, total, saving: true);
 
-        var content = WithIds(valid with { SectionTitle = section.Title, Difficulty = request.Difficulty, TeachingGuide = guide });
+        var content = WithIds(valid with
+        {
+            SectionTitle = section.Title, Difficulty = request.Difficulty, TeachingGuide = guide, Lesson = lesson,
+        });
         var now = timeProvider.GetUtcNow();
         var entity = new StudySetEntity
         {
@@ -121,26 +138,26 @@ public class StudySetService(
         return new StudySetResult(ToResponse(entity, section.DocumentId, content), null);
     }
 
-    /// <summary>How many items the teaching guide counts as on the progress bar.</summary>
+    /// <summary>How many items the teaching guide (or the lesson) counts as on the progress bar.</summary>
     internal const int GuideProgressWeight = 3;
 
     /// <summary>
-    /// The guide alongside the questions. It never fails the material: without it the questions are still saved and
-    /// the teacher can ask for the guide again later (<see cref="AddTeachingGuideAsync"/>).
+    /// The guide or lesson alongside the questions. It never fails the material: without it the questions are still
+    /// saved and the user can ask for it again later (<see cref="AddTeachingGuideAsync"/>, <see cref="AddLessonAsync"/>).
     /// </summary>
-    private async Task<TeachingGuide?> GenerateGuideAsync(
-        string sectionTitle, string text, int words, string difficulty, int startPage, int endPage, Action onDone,
-        CancellationToken ct)
+    private async Task<T?> OptionalAsync<T>(
+        string what, string sectionTitle, Func<CancellationToken, Task<(T? Value, string? ErrorCode)>> generate,
+        Action onDone, CancellationToken ct) where T : class
     {
         try
         {
-            var result = await guides.GenerateAsync(sectionTitle, text, words, difficulty, startPage, endPage, ct);
-            if (result.Guide is null)
+            var (value, errorCode) = await generate(ct);
+            if (value is null)
             {
-                logger.LogWarning("Teaching guide for {Section} failed ({Code}); the material is saved without it.",
-                    sectionTitle, result.ErrorCode);
+                logger.LogWarning("{What} for {Section} failed ({Code}); the material is saved without it.",
+                    what, sectionTitle, errorCode);
             }
-            return result.Guide;
+            return value;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -152,7 +169,28 @@ public class StudySetService(
         }
     }
 
-    public async Task<StudySetResult> AddTeachingGuideAsync(Guid id, string ownerId, CancellationToken ct)
+    public Task<StudySetResult> AddTeachingGuideAsync(Guid id, string ownerId, CancellationToken ct) =>
+        RewriteAsync(id, ownerId, async (title, text, words, content, startPage, endPage) =>
+        {
+            var result = await guides.GenerateAsync(title, text, words, content.Difficulty, startPage, endPage, ct);
+            return (result.Guide is null ? null : content with { TeachingGuide = result.Guide }, result.ErrorCode);
+        }, ct);
+
+    public Task<StudySetResult> AddLessonAsync(Guid id, string ownerId, CancellationToken ct) =>
+        RewriteAsync(id, ownerId, async (title, text, words, content, startPage, endPage) =>
+        {
+            var result = await lessons.GenerateAsync(title, text, words, content.Difficulty, startPage, endPage, ct);
+            return (result.Lesson is null ? null : content with { Lesson = result.Lesson }, result.ErrorCode);
+        }, ct);
+
+    /// <summary>
+    /// Writes a part of a stored study set again from its section's readable text (the guide, the lesson) and saves
+    /// it; the questions stay as they are.
+    /// </summary>
+    private async Task<StudySetResult> RewriteAsync(
+        Guid id, string ownerId,
+        Func<string, string, int, StudySet, int, int, Task<(StudySet? Updated, string? ErrorCode)>> write,
+        CancellationToken ct)
     {
         var entity = await studySets.GetAsync(id, ownerId, ct);
         if (entity is null)
@@ -170,15 +208,14 @@ public class StudySetService(
         var content = JsonSerializer.Deserialize<StudySet>(entity.Content, Json)!;
         var words = pages.Sum(p => Sectioner.CountWords(p.Text));
         var text = SectionText(pages.Select(p => (p.PageNumber, p.Text)));
-        var result = await guides.GenerateAsync(section.Title, text, words, content.Difficulty, section.StartPage, section.EndPage, ct);
-        if (result.Guide is null)
+        var (changed, errorCode) = await write(section.Title, text, words, content, section.StartPage, section.EndPage);
+        if (changed is null)
         {
-            return new StudySetResult(null, result.ErrorCode ?? ErrorCodes.AiFailed);
+            return new StudySetResult(null, errorCode ?? ErrorCodes.AiFailed);
         }
 
-        content = content with { TeachingGuide = result.Guide };
         var updated = await studySets.UpdateContentAsync(
-            id, ownerId, JsonSerializer.Serialize(content, Json), timeProvider.GetUtcNow(), ct);
+            id, ownerId, JsonSerializer.Serialize(changed, Json), timeProvider.GetUtcNow(), ct);
         return updated is null
             ? new StudySetResult(null, ErrorCodes.NotFound)
             : new StudySetResult(ToResponse(updated), null);

@@ -55,6 +55,26 @@ public static class TestStudySets
         DiscussionQuestions = ["Τι θα γινόταν χωρίς φως;"],
     };
 
+    /// <summary>A student lesson that passes the check, every step and card on <paramref name="page"/>.</summary>
+    public static StudentLesson ValidLesson(int page = 1) => new()
+    {
+        Intro = "Θα δεις πώς τα φυτά φτιάχνουν την τροφή τους.",
+        Goals = ["εξηγείς τι είναι η φωτοσύνθεση", "λες πού γίνεται"],
+        Steps = Enumerable.Range(1, 3).Select(i => new LessonPart
+        {
+            Title = $"Βήμα {i}",
+            Explanation = "Η **φωτοσύνθεση** γίνεται στους χλωροπλάστες.",
+            Example = "Σκέψου τον χλωροπλάστη σαν μικρό εργοστάσιο.",
+            Check = new SelfCheck { Question = "Πού γίνεται;", Answer = "Στους χλωροπλάστες." },
+            Page = page,
+        }).ToList(),
+        Flashcards = Enumerable.Range(1, 6)
+            .Select(i => new Flashcard { Front = $"Όρος {i}", Back = $"Ορισμός {i}.", Page = page }).ToList(),
+        MemoryTips = ["Φως + νερό + CO₂ → τροφή + οξυγόνο."],
+        Mistakes = [new Misconception { Mistake = "Τα φυτά τρώνε χώμα.", Correction = "Φτιάχνουν τροφή με το φως." }],
+        Summary = ["Γίνεται στους χλωροπλάστες.", "Χρειάζεται φως.", "Παράγεται οξυγόνο."],
+    };
+
     /// <summary>The amounts a generation prompt asks for ("- theory: 4" …).</summary>
     public static QuestionCounts AskedCounts(string userPrompt)
     {
@@ -86,6 +106,12 @@ public class FakeAiClient : IAiClient
     /// <summary>Teaching guide calls (kept apart, so tests of the questions see only their own calls).</summary>
     public List<string> GuideCalls { get; } = [];
 
+    /// <summary>Student lesson calls (kept apart like the guide calls).</summary>
+    public List<string> LessonCalls { get; } = [];
+
+    /// <summary>The answer to a lesson call: a valid lesson (page 3) unless a test sets another.</summary>
+    public Func<AiResult> Lesson { get; set; } = () => AiResult.Ok(JsonSerializer.Serialize(TestStudySets.ValidLesson(3), StudySetJson.Options));
+
     /// <summary>The answer to a teaching guide call: a valid guide (page 3) unless a test sets another.</summary>
     public Func<AiResult> Guide { get; set; } = () => AiResult.Ok(JsonSerializer.Serialize(TestStudySets.ValidGuide(3), StudySetJson.Options));
 
@@ -96,6 +122,7 @@ public class FakeAiClient : IAiClient
             _results.Clear();
             Calls.Clear();
             GuideCalls.Clear();
+            LessonCalls.Clear();
             _answer = null;
             foreach (var r in results)
             {
@@ -113,6 +140,7 @@ public class FakeAiClient : IAiClient
             _results.Clear();
             Calls.Clear();
             GuideCalls.Clear();
+            LessonCalls.Clear();
             _answer = answer;
         }
         return this;
@@ -134,6 +162,11 @@ public class FakeAiClient : IAiClient
             {
                 GuideCalls.Add(user);
                 return Task.FromResult(Guide());
+            }
+            if (system == StudentLessonPrompt.System)
+            {
+                LessonCalls.Add(user);
+                return Task.FromResult(Lesson());
             }
             Calls.Add((system, user));
             result = _answer is not null ? _answer(user)

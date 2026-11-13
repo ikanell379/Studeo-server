@@ -17,6 +17,9 @@ public record StudySet
 
     /// <summary>Only in teachers' material: how to teach the section (shown before the test). Null otherwise.</summary>
     public TeachingGuide? TeachingGuide { get; init; }
+
+    /// <summary>Only in students' material: a tutor's lesson on the section, with flashcards. Null otherwise.</summary>
+    public StudentLesson? Lesson { get; init; }
 }
 
 public record TheoryItem
