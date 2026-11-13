@@ -8,7 +8,7 @@ public class UploadDocumentRequestValidator : AbstractValidator<UploadDocumentRe
     public UploadDocumentRequestValidator()
     {
         RuleFor(r => r.File)
-            .NotNull().WithErrorCode(ErrorCodes.FileMissing).WithMessage("A PDF, Word (.docx) or PowerPoint (.pptx, .ppt) file is required.");
+            .NotNull().WithErrorCode(ErrorCodes.FileMissing).WithMessage("A PDF, Word (.docx), PowerPoint (.pptx, .ppt) or text (.txt, .md) file is required.");
 
         When(r => r.File is not null, () =>
         {
@@ -20,7 +20,7 @@ public class UploadDocumentRequestValidator : AbstractValidator<UploadDocumentRe
             RuleFor(r => r.File!.FileName)
                 .Must(name => DocumentKinds.FromFileName(name) is not null)
                 .WithErrorCode(ErrorCodes.UnsupportedFile)
-                .WithMessage("Only PDF, Word (.docx) and PowerPoint (.pptx, .ppt) files are accepted.");
+                .WithMessage("Only PDF, Word (.docx), PowerPoint (.pptx, .ppt) and text (.txt, .md) files are accepted.");
         });
     }
 }

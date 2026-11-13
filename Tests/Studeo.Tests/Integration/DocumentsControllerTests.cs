@@ -362,7 +362,7 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     [Fact]
     public async Task Upload_unsupported_extension_returns_unsupported_file()
     {
-        var response = await factory.CreateClientAs(TestUser.NewStudent()).PostAsync("/api/documents", Form("hello"u8.ToArray(), "notes.txt", "text/plain"));
+        var response = await factory.CreateClientAs(TestUser.NewStudent()).PostAsync("/api/documents", Form("hello"u8.ToArray(), "notes.rtf", "application/rtf"));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(ErrorCodes.UnsupportedFile, await ErrorCode(response));
@@ -393,5 +393,90 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
         Assert.Equal(ErrorCodes.TooManyPages, await ErrorCode(response));
+    }
+
+    // ---- Text ----
+
+    [Fact]
+    public async Task Upload_text_file_is_split_into_pages_of_about_500_words()
+    {
+        var client = factory.CreateClientAs(TestUser.NewStudent());
+        var text = System.Text.Encoding.UTF8.GetBytes(string.Join('\n', Enumerable.Repeat(Words(100), 8)));
+
+        var response = await client.PostAsync("/api/documents", Form(text, "σημειώσεις.txt", "text/plain"));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<DocumentResponse>();
+        Assert.Equal(("σημειώσεις.txt", 2), (document!.FileName, document.PageCount));
+    }
+
+    [Fact]
+    public async Task Upload_markdown_file_is_split_into_sections_by_its_headings()
+    {
+        var client = factory.CreateClientAs(TestUser.NewStudent());
+        var text = System.Text.Encoding.UTF8.GetBytes($"# Το κύτταρο\n{Words(400)}\n# Η φωτοσύνθεση\n{Words(400)}");
+
+        var response = await client.PostAsync("/api/documents", Form(text, "biology.md", "text/markdown"));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<DocumentResponse>();
+        var sections = await client.GetFromJsonAsync<List<SectionResponse>>($"/api/documents/{document!.Id}/sections");
+        Assert.Equal(["Ολόκληρο το κείμενο", "Το κύτταρο", "Η φωτοσύνθεση"], sections!.Select(s => s.Title));
+    }
+
+    [Fact]
+    public async Task Typed_text_is_stored_like_a_text_file_in_the_chosen_course()
+    {
+        var client = factory.CreateClientAs(TestUser.NewStudent());
+        var course = await (await client.PostAsJsonAsync("/api/courses", new CourseNameRequest("Βιολογία")))
+            .Content.ReadFromJsonAsync<CourseResponse>();
+
+        var response = await client.PostAsJsonAsync("/api/documents/text",
+            new CreateTextDocumentRequest(null, $"Η φωτοσύνθεση\n{Words(50)}", course!.Id));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<DocumentResponse>();
+        Assert.Equal(("Η φωτοσύνθεση.txt", 1, course.Id), (document!.FileName, document.PageCount, document.CourseId));
+        Assert.Equal($"/api/documents/{document.Id}", response.Headers.Location?.AbsolutePath);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<StudeoDbContext>();
+        var page = await db.DocumentPages.SingleAsync(p => p.DocumentId == document.Id);
+        Assert.StartsWith("Η φωτοσύνθεση\nφωτοσύνθεση φωτοσύνθεση", page.Text);
+    }
+
+    [Fact]
+    public async Task Same_typed_text_again_returns_duplicate_document()
+    {
+        var client = factory.CreateClientAs(TestUser.NewStudent());
+        var request = new CreateTextDocumentRequest("Σημειώσεις", Words(50), null);
+        var first = await (await client.PostAsJsonAsync("/api/documents/text", request)).Content.ReadFromJsonAsync<DocumentResponse>();
+
+        var again = await client.PostAsJsonAsync("/api/documents/text", request with { Title = "Άλλος τίτλος" });
+
+        Assert.Equal(HttpStatusCode.Conflict, again.StatusCode);
+        using var json = JsonDocument.Parse(await again.Content.ReadAsStringAsync());
+        Assert.Equal(ErrorCodes.DuplicateDocument, json.RootElement.GetProperty("code").GetString());
+        Assert.Equal(first!.Id, json.RootElement.GetProperty("document").GetProperty("id").GetGuid());
+    }
+
+    [Fact]
+    public async Task Empty_typed_text_returns_text_missing()
+    {
+        var response = await factory.CreateClientAs(TestUser.NewStudent())
+            .PostAsJsonAsync("/api/documents/text", new CreateTextDocumentRequest("Τίτλος", "  ", null));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ErrorCodes.TextMissing, await ErrorCode(response));
+    }
+
+    [Fact]
+    public async Task Typed_text_without_letters_returns_no_text()
+    {
+        var response = await factory.CreateClientAs(TestUser.NewStudent())
+            .PostAsJsonAsync("/api/documents/text", new CreateTextDocumentRequest(null, "1 2 3", null));
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal(ErrorCodes.NoText, await ErrorCode(response));
     }
 }

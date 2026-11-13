@@ -18,12 +18,21 @@ public class UploadDocumentRequestValidatorTests
     }
 
     [Theory]
+    [InlineData("notes.txt")]
+    [InlineData("notes.md")]
+    public void Text_files_pass(string name)
+    {
+        Assert.True(_validator.Validate(new UploadDocumentRequest { File = File(name, 1000) }).IsValid);
+    }
+
+    [Theory]
     [InlineData(null, 0, ErrorCodes.FileMissing)]
     [InlineData("notes.pdf", 0, ErrorCodes.FileEmpty)]
     [InlineData("notes.pdf", DocumentLimits.MaxFileBytes + 1, ErrorCodes.FileTooLarge)]
     [InlineData("notes.doc", 1000, ErrorCodes.UnsupportedFile)]
     [InlineData("slides.pps", 1000, ErrorCodes.UnsupportedFile)]
     [InlineData("notes", 1000, ErrorCodes.UnsupportedFile)]
+    [InlineData("notes.rtf", 1000, ErrorCodes.UnsupportedFile)]
     public void Invalid_files_fail_with_code(string? name, long length, string code)
     {
         var request = new UploadDocumentRequest { File = name is null ? null : File(name, length) };

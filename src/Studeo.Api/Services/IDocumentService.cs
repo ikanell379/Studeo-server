@@ -10,6 +10,12 @@ public interface IDocumentService
     /// </summary>
     Task<UploadDocumentResult> UploadAsync(string ownerId, string fileName, byte[] content, Guid? courseId, CancellationToken ct);
 
+    /// <summary>
+    /// Stores text the user typed or pasted like an uploaded .txt file named after <paramref name="title"/>
+    /// (or the text's first line). Same results as <see cref="UploadAsync"/>.
+    /// </summary>
+    Task<UploadDocumentResult> CreateFromTextAsync(string ownerId, string? title, string text, Guid? courseId, CancellationToken ct);
+
     /// <summary>The owner's document, or null if it doesn't exist or belongs to someone else.</summary>
     Task<DocumentResponse?> GetAsync(Guid id, string ownerId, CancellationToken ct);
 

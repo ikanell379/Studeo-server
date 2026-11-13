@@ -1,3 +1,4 @@
+using System.Text;
 using Studeo.Api.Contracts;
 using Studeo.Api.Models;
 using Studeo.Api.Repositories;
@@ -66,6 +67,35 @@ public class DocumentService(
         await repository.AddAsync(document, ct);
         return new UploadDocumentResult(ToResponse(document), null);
     }
+
+    public Task<UploadDocumentResult> CreateFromTextAsync(
+        string ownerId, string? title, string text, Guid? courseId, CancellationToken ct) =>
+        UploadAsync(ownerId, TextFileName(title, text), Encoding.UTF8.GetBytes(text), courseId, ct);
+
+    /// <summary>
+    /// «title.txt»; without a title, the text's first line (shortened). Characters a file name can't have
+    /// (/ \ : * ? " &lt; &gt; | and control characters) become spaces, since the name is also used for downloads.
+    /// </summary>
+    internal static string TextFileName(string? title, string text)
+    {
+        var name = string.IsNullOrWhiteSpace(title)
+            ? text.ReplaceLineEndings("\n").Split('\n').Select(l => l.Trim().TrimStart('#').Trim()).FirstOrDefault(l => l.Length > 0) ?? ""
+            : title;
+        name = string.Join(' ', name.Split(NotInFileNames, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        if (name.Length > TextDocumentLimits.MaxTitleLength)
+        {
+            name = name[..(TextDocumentLimits.MaxTitleLength - 1)].TrimEnd() + "…";
+        }
+        if (name.Length == 0)
+        {
+            name = TextDocumentLimits.DefaultTitle;
+        }
+        return name.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) ? name : name + ".txt";
+    }
+
+    /// <summary>The same on every OS (GetInvalidFileNameChars on Linux is only / and NUL).</summary>
+    private static readonly char[] NotInFileNames =
+        [.. Enumerable.Range(0, 32).Select(i => (char)i), '/', '\\', ':', '*', '?', '"', '<', '>', '|'];
 
     public async Task<DocumentResponse?> GetAsync(Guid id, string ownerId, CancellationToken ct)
     {

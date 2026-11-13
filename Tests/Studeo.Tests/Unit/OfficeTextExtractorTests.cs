@@ -155,16 +155,20 @@ public class OfficeTextExtractorTests
     [InlineData("notes.PDF", null)]
     [InlineData("notes.docx", null)]
     [InlineData("slides.PPTX", null)]
-    [InlineData("notes.txt", ErrorCodes.UnsupportedFile)]
+    [InlineData("notes.txt", null)]
+    [InlineData("notes.MD", null)]
+    [InlineData("notes.rtf", ErrorCodes.UnsupportedFile)]
     public void The_extension_picks_the_extractor(string fileName, string? code)
     {
         var extractor = new DocumentTextExtractor(
-            new PdfTextExtractor(NullLogger<PdfTextExtractor>.Instance), _docx, _pptx, new PptTextExtractor(NullLogger<PptTextExtractor>.Instance));
+            new PdfTextExtractor(NullLogger<PdfTextExtractor>.Instance), _docx, _pptx, new PptTextExtractor(NullLogger<PptTextExtractor>.Instance),
+            new TextFileExtractor());
         var content = Path.GetExtension(fileName).ToLowerInvariant() switch
         {
             ".pdf" => TestPdfs.Build(TestPdfs.LongSentence),
             ".docx" => Docx(Text(TestPdfs.LongSentence)),
             ".pptx" => Pptx(new Slide("Title", [TestPdfs.LongSentence])),
+            ".txt" or ".md" => System.Text.Encoding.UTF8.GetBytes(TestPdfs.LongSentence),
             _ => "text"u8.ToArray(),
         };
 

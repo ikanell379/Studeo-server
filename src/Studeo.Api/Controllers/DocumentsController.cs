@@ -12,9 +12,13 @@ namespace Studeo.Api.Controllers;
 [Route("api/documents")]
 public class DocumentsController(
     IDocumentService documentService,
-    IValidator<UploadDocumentRequest> uploadValidator) : ControllerBase
+    IValidator<UploadDocumentRequest> uploadValidator,
+    IValidator<CreateTextDocumentRequest> textValidator) : ControllerBase
 {
-    /// <summary>Uploads a PDF, extracts its text per page and stores it.</summary>
+    /// <summary>
+    /// Uploads a PDF, Word (.docx), PowerPoint (.pptx, .ppt) or text (.txt, .md) file, extracts its text per page
+    /// and stores it.
+    /// </summary>
     [HttpPost]
     [Consumes("multipart/form-data")]
     [RequestSizeLimit(DocumentLimits.MaxRequestBytes)]
@@ -42,6 +46,35 @@ public class DocumentsController(
         }
 
         var result = await documentService.UploadAsync(User.UserId(), file.FileName, content, request.CourseId, ct);
+        return Created(result);
+    }
+
+    /// <summary>
+    /// Stores text the user typed or pasted, like an uploaded .txt file: split into pages of about 500 words
+    /// (and into sections by «Κεφάλαιο …» lines). Named after Title, or the text's first line.
+    /// </summary>
+    [HttpPost("text")]
+    [Consumes("application/json")]
+    [ProducesResponseType<DocumentResponse>(StatusCodes.Status201Created)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<ActionResult<DocumentResponse>> CreateFromText(CreateTextDocumentRequest request, CancellationToken ct)
+    {
+        var validation = await textValidator.ValidateAsync(request, ct);
+        if (!validation.IsValid)
+        {
+            var first = validation.Errors[0];
+            return Error(StatusCodes.Status400BadRequest, first.ErrorCode, first.ErrorMessage);
+        }
+
+        var result = await documentService.CreateFromTextAsync(User.UserId(), request.Title, request.Text!, request.CourseId, ct);
+        return Created(result);
+    }
+
+    private ActionResult<DocumentResponse> Created(UploadDocumentResult result)
+    {
         switch (result.ErrorCode)
         {
             case null:

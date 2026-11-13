@@ -16,6 +16,12 @@ public static class ErrorCodes
     public const string NoText = "no_text";
     public const string NotFound = "not_found";
 
+    /// <summary>POST /api/documents/text without any text.</summary>
+    public const string TextMissing = "text_missing";
+
+    /// <summary>Typed text longer than TextDocumentLimits.MaxTextLength.</summary>
+    public const string TextTooLong = "text_too_long";
+
     /// <summary>
     /// The user already uploaded this exact PDF. The 409 response has the stored one as "document"
     /// (a DocumentResponse), so the UI can tell them where it is and open it.

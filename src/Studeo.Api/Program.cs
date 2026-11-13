@@ -33,6 +33,7 @@ builder.Services.AddSingleton<IPdfTextExtractor, PdfTextExtractor>();
 builder.Services.AddSingleton<DocxTextExtractor>();
 builder.Services.AddSingleton<PptxTextExtractor>();
 builder.Services.AddSingleton<PptTextExtractor>();
+builder.Services.AddSingleton<TextFileExtractor>();
 builder.Services.AddSingleton<IDocumentTextExtractor, DocumentTextExtractor>();
 builder.Services.AddSingleton<ISectioner, Sectioner>();
 builder.Services.AddScoped<IDocumentService, DocumentService>();
