@@ -64,6 +64,30 @@ public class StudySetServiceTests
     }
 
     [Fact]
+    public async Task The_chosen_kind_of_material_reaches_every_prompt_and_is_stored()
+    {
+        _ai.Returns(ValidJson());
+
+        var result = await Service().CreateAsync(
+            Request() with { Subject = Subjects.Programming, Language = "python" }, Owner, MaterialExtra.Lesson, null, CancellationToken.None);
+
+        Assert.Equal((Subjects.Programming, "python"), (result.StudySet!.Content.Subject, result.StudySet.Content.Language));
+        Assert.Contains("προγραμματισμός (γλώσσα: Python)", _ai.Calls.Single().User);
+        Assert.Contains("προγραμματισμός (γλώσσα: Python)", Assert.Single(_ai.LessonCalls));
+    }
+
+    [Fact]
+    public async Task Without_a_choice_the_kind_comes_from_the_text()
+    {
+        _ai.Returns(ValidJson());
+
+        var result = await Service().CreateAsync(Request(), Owner, MaterialExtra.None, null, CancellationToken.None);
+
+        Assert.Equal((Subjects.General, (string?)null), (result.StudySet!.Content.Subject, result.StudySet.Content.Language));
+        Assert.DoesNotContain("Είδος υλικού", _ai.Calls.Single().User);
+    }
+
+    [Fact]
     public async Task Without_an_extra_there_is_no_guide_or_lesson()
     {
         _ai.Returns(ValidJson());
@@ -296,12 +320,72 @@ public class StudySetServiceTests
         }
 
         Check(schema);
-        Assert.Equal(8, schema["properties"]!.AsObject().Count);
+        Assert.Equal(9, schema["properties"]!.AsObject().Count);
     }
 
     private StudySetService ServiceWithPages(params DocumentPage[] pages) => new(
         new FakeDocumentRepository(_section, [.. pages]),
         _studySets, _ai, new GeneratedStudySetValidator(), Guides(_ai), Lessons(_ai), TimeProvider.System, NullLogger<StudySetService>.Instance);
+
+    // ---- Science: problems ----
+
+    [Fact]
+    public async Task Science_material_gets_the_problems_asked_for_with_ids()
+    {
+        _ai.AnswersWhatIsAsked(page: 3);
+        var counts = new QuestionCounts(1, 0, 0, 0, 0, 0, Problems: 2);
+
+        var result = await Service().CreateAsync(
+            new CreateStudySetRequest(_section.Id, "medium", counts, Subject: Subjects.Science), Owner, MaterialExtra.None, null, CancellationToken.None);
+
+        Assert.Null(result.ErrorCode);
+        var problems = result.StudySet!.Content.Problems;
+        Assert.Equal(2, problems.Count);
+        Assert.All(problems, p => Assert.Equal(32, p.Id.Length));
+        Assert.Equal((true, 50.0, "m"), (problems[0].IsNumeric, problems[0].NumericValue, problems[0].Unit));
+        Assert.Contains("- problems: 2", _ai.Calls.Single().User);
+    }
+
+    [Fact]
+    public async Task Problems_are_not_made_for_other_material_and_alone_they_are_an_invalid_request()
+    {
+        _ai.AnswersWhatIsAsked(page: 3);
+
+        var withTheory = await Service().CreateAsync(
+            new CreateStudySetRequest(_section.Id, "medium", new QuestionCounts(1, 0, 0, 0, 0, 0, Problems: 2)), Owner, MaterialExtra.None, null, CancellationToken.None);
+        var onlyProblems = await Service().CreateAsync(
+            new CreateStudySetRequest(_section.Id, "medium", new QuestionCounts(0, 0, 0, 0, 0, 0, Problems: 2)), Owner, MaterialExtra.None, null, CancellationToken.None);
+
+        Assert.Empty(withTheory.StudySet!.Content.Problems);
+        Assert.Contains("- problems: 0", _ai.Calls.Single().User);
+        Assert.Equal(ErrorCodes.InvalidRequest, onlyProblems.ErrorCode);
+    }
+
+    [Fact]
+    public void Full_coverage_of_science_has_problems_and_they_are_written_in_their_own_part()
+    {
+        Assert.Equal(0, FullCoverage.CountsFor(1000).Problems);
+        var science = FullCoverage.CountsFor(1000, science: true);
+        Assert.Equal(4, science.Problems);
+
+        var parts = StudySetService.Parts(science);
+        Assert.Equal(new QuestionCounts(0, 0, 0, 0, 0, 0, science.Problems), parts[^1]);
+        Assert.Equal(StudySetService.TotalItems(science), parts.Sum(StudySetService.TotalItems));
+    }
+
+    [Fact]
+    public void A_problem_needs_its_solution()
+    {
+        var counts = new QuestionCounts(0, 0, 0, 0, 0, 0, Problems: 1);
+        var valid = TestStudySets.Valid(counts, page: 3);
+        var validator = new GeneratedStudySetValidator();
+
+        Assert.True(validator.Validate(new GeneratedStudySet(valid, counts, 3, 4)).IsValid);
+        var noSteps = valid with { Problems = [valid.Problems[0] with { Steps = [] }] };
+        Assert.Contains(validator.Validate(new GeneratedStudySet(noSteps, counts, 3, 4)).Errors, e => e.ErrorMessage.Contains("steps count"));
+        var noAnswer = valid with { Problems = [valid.Problems[0] with { Answer = "" }] };
+        Assert.False(validator.Validate(new GeneratedStudySet(noAnswer, counts, 3, 4)).IsValid);
+    }
 
     [Fact]
     public async Task Unreadable_pages_are_left_out_of_the_prompt()

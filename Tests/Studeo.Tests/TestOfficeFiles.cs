@@ -1,6 +1,7 @@
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using A = DocumentFormat.OpenXml.Drawing;
+using M = DocumentFormat.OpenXml.Math;
 using P = DocumentFormat.OpenXml.Presentation;
 using W = DocumentFormat.OpenXml.Wordprocessing;
 
@@ -9,8 +10,16 @@ namespace Studeo.Tests;
 /// <summary>Builds small .docx and .pptx files in memory for tests.</summary>
 public static class TestOfficeFiles
 {
-    /// <summary>A paragraph of a Word document: Style "Heading1"… or null; PageBreak: a manual page break before it.</summary>
-    public record Para(string Text, string? Style = null, bool PageBreak = false, bool RenderedBreak = false);
+    /// <summary>
+    /// A paragraph of a Word document: Style "Heading1"… or null; PageBreak: a manual page break before it.
+    /// Font: the font of its text; Math: an equation (OMML «m:oMath» or «m:oMathPara» XML) after the text.
+    /// </summary>
+    public record Para(
+        string Text, string? Style = null, bool PageBreak = false, bool RenderedBreak = false, string? Font = null,
+        string? Math = null);
+
+    /// <summary>The OMML namespace, for equations written as XML in tests.</summary>
+    public const string MathNs = "http://schemas.openxmlformats.org/officeDocument/2006/math";
 
     public static Para H1(string text, bool pageBreak = false) => new(text, "Heading1", pageBreak);
 
@@ -43,6 +52,10 @@ public static class TestOfficeFiles
                 {
                     run.Append(new W.LastRenderedPageBreak());
                 }
+                if (p.Font is not null)
+                {
+                    run.Append(new W.RunProperties(new W.RunFonts { Ascii = p.Font, HighAnsi = p.Font }));
+                }
                 run.Append(new W.Text(p.Text) { Space = SpaceProcessingModeValues.Preserve });
 
                 var paragraph = new W.Paragraph();
@@ -51,6 +64,12 @@ public static class TestOfficeFiles
                     paragraph.Append(new W.ParagraphProperties(new W.ParagraphStyleId { Val = p.Style }));
                 }
                 paragraph.Append(run);
+                if (p.Math is not null)
+                {
+                    paragraph.Append(p.Math.StartsWith("<m:oMathPara")
+                        ? new M.Paragraph(p.Math)
+                        : new M.OfficeMath(p.Math));
+                }
                 body.Append(paragraph);
             }
             main.Document = new W.Document(body);
@@ -104,7 +123,8 @@ public static class TestOfficeFiles
         var text = new P.TextBody(new A.BodyProperties());
         foreach (var line in lines)
         {
-            text.Append(new A.Paragraph(new A.Run(new A.Text(line))));
+            // A line starting with «<a:p» is a whole paragraph as XML (a code font, an equation).
+            text.Append(line.StartsWith("<a:p") ? new A.Paragraph(line) : new A.Paragraph(new A.Run(new A.Text(line))));
         }
         return new P.Shape(
             new P.NonVisualShapeProperties(

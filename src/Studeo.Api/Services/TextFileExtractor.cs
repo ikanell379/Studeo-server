@@ -35,7 +35,7 @@ public partial class TextFileExtractor
             return TextExtractionResult.Fail(ErrorCodes.TooManyPages);
         }
 
-        return new TextExtractionResult(pages.Select(p => OfficeFiles.Clean(p.Select(l => l.Text))).ToList(), null)
+        return new TextExtractionResult(pages.Select(p => OfficeFiles.Clean(p.Select(l => new TextLine(l.Text, l.Code, l.Lang)))).ToList(), null)
         {
             Headings = DocxTextExtractor.Headings(pages),
         };
@@ -90,6 +90,7 @@ public partial class TextFileExtractor
     private static IEnumerable<DocxTextExtractor.Token> Tokens(string text)
     {
         var inCode = false;
+        string? lang = null;
         // ReplaceLineEndings also takes the form feed for a line end: split the pages first.
         var pages = text.Split('\f');
         for (var i = 0; i < pages.Length; i++)
@@ -105,10 +106,18 @@ public partial class TextFileExtractor
                 int? level = null;
                 if (line.TrimStart().StartsWith("```"))
                 {
-                    inCode = !inCode; // a «# comment» in a code block is not a heading
+                    // The fence is written again around the code (OfficeFiles.Clean), with its language.
+                    inCode = !inCode;
+                    lang = inCode ? CodeLanguage(line.TrimStart()[3..]) : null;
                     continue;
                 }
-                if (!inCode && MarkdownHeadingRegex().Match(line) is { Success: true } m)
+                if (inCode)
+                {
+                    // Kept as written, blank lines too; a «# comment» in it is not a heading.
+                    yield return new DocxTextExtractor.Line(line, null, Code: true, Lang: lang);
+                    continue;
+                }
+                if (MarkdownHeadingRegex().Match(line) is { Success: true } m)
                 {
                     level = m.Groups[1].Length;
                     line = m.Groups[2].Value.TrimEnd('#', ' ');
@@ -120,6 +129,13 @@ public partial class TextFileExtractor
                 }
             }
         }
+    }
+
+    /// <summary>«python» from «```python {.numberLines}»; null when the fence names none.</summary>
+    private static string? CodeLanguage(string info)
+    {
+        var word = info.Trim().Split(' ', '{')[0].Trim().ToLowerInvariant();
+        return word.Length is > 0 and <= 20 && word.All(c => char.IsLetterOrDigit(c) || c is '+' or '#' or '-' or '_') ? word : null;
     }
 
     [GeneratedRegex(@"^ {0,3}(#{1,6})\s+(.+)$")]

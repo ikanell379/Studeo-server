@@ -34,6 +34,8 @@ public static class PageQuality
 
     public static bool IsUnreadable(string text)
     {
+        // Program code («x=1;», «printf(...)») and formulas mix letters and symbols on purpose: judge only the prose.
+        text = TextKinds.ProseOnly(text);
         var words = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
             .Select(w => w.Trim(".,;:!?«»\"'()[]-–—·…".ToCharArray()))
             .Where(w => w.Any(char.IsLetter))

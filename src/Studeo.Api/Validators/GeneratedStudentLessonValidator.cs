@@ -25,7 +25,23 @@ public class GeneratedStudentLessonValidator : AbstractValidator<GeneratedStuden
             s.RuleFor(x => x.Explanation).NotEmpty();
             s.RuleFor(x => x.Check.Question).NotEmpty();
             s.RuleFor(x => x.Check.Answer).NotEmpty();
+            s.When(x => x.Worked is not null, () =>
+            {
+                s.RuleFor(x => x.Worked!.Steps.Count).InclusiveBetween(1, StudentLessonLimits.MaxSolutionSteps).WithName("worked steps count");
+                s.RuleFor(x => x.Worked!.Answer).NotEmpty().WithName("worked answer");
+            });
+            s.When(x => x.Practice is not null, () =>
+            {
+                s.RuleFor(x => x.Practice!.Steps.Count).InclusiveBetween(1, StudentLessonLimits.MaxSolutionSteps).WithName("practice steps count");
+                s.RuleFor(x => x.Practice!.Answer).NotEmpty().WithName("practice answer");
+            });
         }).OverridePropertyName("steps");
+
+        RuleForEach(g => g.Lesson.Formulas).ChildRules(f =>
+        {
+            f.RuleFor(x => x.Name).NotEmpty();
+            f.RuleFor(x => x.Meaning).NotEmpty();
+        }).OverridePropertyName("formulas");
 
         RuleFor(g => g.Lesson.Flashcards.Count)
             .InclusiveBetween(StudentLessonLimits.MinFlashcards, StudentLessonLimits.MaxFlashcards).OverridePropertyName("flashcards count");

@@ -43,7 +43,7 @@ public class TeachingGuideTests
     {
         _ai.Guide = Sequence(Json(TestStudySets.ValidGuide(3) with { Objectives = [] }), Json(TestStudySets.ValidGuide(3)));
 
-        var result = await Generator().GenerateAsync("Φωτοσύνθεση", "[σελ. 3]\nΚείμενο", 300, "easy", 3, 4, CancellationToken.None);
+        var result = await Generator().GenerateAsync("Φωτοσύνθεση", "[σελ. 3]\nΚείμενο", 300, "easy", 3, 4, MaterialSubject.General, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         Assert.Equal(3, result.Guide!.KeyPoints.Count);
@@ -55,9 +55,9 @@ public class TeachingGuideTests
     public async Task Generator_gives_up_after_two_bad_answers_and_passes_service_errors_on()
     {
         _ai.Guide = () => AiResult.Ok("{}");
-        var bad = await Generator().GenerateAsync("Τ", "κείμενο", 100, "easy", 1, 1, CancellationToken.None);
+        var bad = await Generator().GenerateAsync("Τ", "κείμενο", 100, "easy", 1, 1, MaterialSubject.General, CancellationToken.None);
         _ai.Guide = () => AiResult.Fail(ErrorCodes.AiBusy);
-        var busy = await Generator().GenerateAsync("Τ", "κείμενο", 100, "easy", 1, 1, CancellationToken.None);
+        var busy = await Generator().GenerateAsync("Τ", "κείμενο", 100, "easy", 1, 1, MaterialSubject.General, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.AiInvalidOutput, bad.ErrorCode);
         Assert.Equal(ErrorCodes.AiBusy, busy.ErrorCode);
@@ -68,7 +68,7 @@ public class TeachingGuideTests
     {
         _ai.Guide = () => Json(TestStudySets.ValidGuide(9));
 
-        var result = await Generator().GenerateAsync("Τ", "κείμενο", 100, "easy", 3, 4, CancellationToken.None);
+        var result = await Generator().GenerateAsync("Τ", "κείμενο", 100, "easy", 3, 4, MaterialSubject.General, CancellationToken.None);
 
         Assert.All(result.Guide!.KeyPoints, p => Assert.Equal(4, p.Page));
     }

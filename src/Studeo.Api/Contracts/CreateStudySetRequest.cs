@@ -1,14 +1,19 @@
 namespace Studeo.Api.Contracts;
 
-public record QuestionCounts(int Theory, int OpenQuestions, int TrueFalse, int Matching, int MultipleChoice, int FillBlanks);
+/// <summary>How many of each kind. Problems: science material only (0 for any other kind).</summary>
+public record QuestionCounts(int Theory, int OpenQuestions, int TrueFalse, int Matching, int MultipleChoice, int FillBlanks, int Problems = 0);
 
 /// <summary>
 /// Generate study material for a section. Difficulty: "easy" | "medium" | "hard".
 /// Mode: "custom" (default) uses Counts; "full" covers the whole section with theory and every exercise type,
 /// the amounts set by the server from the section's length (Counts is then ignored and may be null).
 /// Name: what the user calls this material (optional; the section title when empty).
+/// Subject / Language: the kind of material, as the user set it in the settings (optional; found from the text when
+/// empty). Language is used for "programming" only.
 /// </summary>
-public record CreateStudySetRequest(Guid SectionId, string Difficulty, QuestionCounts? Counts, string? Mode = null, string? Name = null)
+public record CreateStudySetRequest(
+    Guid SectionId, string Difficulty, QuestionCounts? Counts, string? Mode = null, string? Name = null,
+    string? Subject = null, string? Language = null)
 {
     public bool IsFull => Mode == StudySetModes.Full;
 }

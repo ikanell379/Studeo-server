@@ -123,6 +123,18 @@ public static class TestSheetBuilder
                 }).ToList()));
         }
 
+        if (wanted.Contains(TestQuestionTypes.Problems) && set.Problems.Count > 0)
+        {
+            parts.Add(("Ασκήσεις",
+                answerKey ? "" : "Λύστε τις παρακάτω ασκήσεις. Γράψτε τα δεδομένα, τους τύπους που χρησιμοποιείτε και τις πράξεις σας.",
+                set.Problems.Select((q, i) => new TestQuestion(i + 1, q.Statement)
+                {
+                    Page = Page(q.Page),
+                    AnswerLines = answerKey ? 0 : 10,
+                    Answer = answerKey ? Solution(q) : null,
+                }).ToList()));
+        }
+
         var sheetTitle = string.IsNullOrWhiteSpace(title) ? set.SectionTitle : title.Trim();
         return new TestSheet(
             sheetTitle,
@@ -130,6 +142,10 @@ public static class TestSheetBuilder
             answerKey,
             parts.Select((p, i) => new TestPart($"{PartLetters[i]}. {p.Heading}", p.Instructions, p.Questions)).ToList());
     }
+
+    /// <summary>The solution of a problem for the answer key: its steps one per line, then the result.</summary>
+    internal static string Solution(ProblemItem problem) =>
+        string.Join("\n", problem.Steps.Select((s, i) => $"{i + 1}. {s}").Append($"Αποτέλεσμα: {problem.Answer}"));
 
     /// <summary>
     /// The right column's order: shuffled, but always the same for the same question (so the test and its answers

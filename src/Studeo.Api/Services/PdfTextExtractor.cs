@@ -29,7 +29,7 @@ public partial class PdfTextExtractor(ILogger<PdfTextExtractor> logger) : IPdfTe
             var headings = new List<StyledHeading>();
             foreach (var page in document.GetPages())
             {
-                pages.Add(Clean(ContentOrderTextExtractor.GetText(page)));
+                pages.Add(Clean(PdfCodeBlocks.Restore(page, ContentOrderTextExtractor.GetText(page))));
                 headings.AddRange(StyledHeadings(page));
             }
 

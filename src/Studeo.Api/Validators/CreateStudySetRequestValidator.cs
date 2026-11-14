@@ -17,6 +17,14 @@ public class CreateStudySetRequestValidator : AbstractValidator<CreateStudySetRe
             .Must(m => m is null || StudySetModes.All.Contains(m)).WithErrorCode(ErrorCodes.InvalidRequest)
             .WithMessage("Mode must be custom or full.");
 
+        RuleFor(r => r.Subject)
+            .Must(s => s is null || Subjects.All.Contains(s)).WithErrorCode(ErrorCodes.InvalidRequest)
+            .WithMessage("Subject must be general, science or programming.");
+
+        RuleFor(r => r.Language)
+            .Must(l => l is null || ProgrammingLanguages.All.Contains(l)).WithErrorCode(ErrorCodes.InvalidRequest)
+            .WithMessage($"Language must be one of: {string.Join(", ", ProgrammingLanguages.All)}.");
+
         RuleFor(r => r.Name)
             .MaximumLength(StudySetLimits.MaxNameLength).WithErrorCode(ErrorCodes.InvalidRequest);
 
@@ -36,5 +44,5 @@ public class CreateStudySetRequestValidator : AbstractValidator<CreateStudySetRe
     }
 
     private static int[] Values(QuestionCounts c) =>
-        [c.Theory, c.OpenQuestions, c.TrueFalse, c.Matching, c.MultipleChoice, c.FillBlanks];
+        [c.Theory, c.OpenQuestions, c.TrueFalse, c.Matching, c.MultipleChoice, c.FillBlanks, c.Problems];
 }

@@ -45,7 +45,16 @@ public class StudySetService(
 
         // "full": the amounts follow the length of the readable text; otherwise what the user chose.
         var readableWords = Math.Max(0, section.WordCount - unreadable.Sum(p => Sectioner.CountWords(p.Text)));
-        var counts = request.IsFull ? FullCoverage.CountsFor(readableWords) : request.Counts!;
+        var subject = SubjectFor(request, pages.Select(p => p.Text));
+        var science = subject.Subject == Subjects.Science;
+        // Problems only for science material, whatever was asked.
+        var counts = request.IsFull
+            ? FullCoverage.CountsFor(readableWords, science)
+            : request.Counts! with { Problems = science ? request.Counts!.Problems : 0 };
+        if (TotalItems(counts) == 0)
+        {
+            return new StudySetResult(null, ErrorCodes.InvalidRequest);
+        }
         var parts = Parts(counts);
         // The teacher's guide (or the student's lesson) is written alongside the questions; on the bar it counts as a
         // few items.
@@ -83,19 +92,19 @@ public class StudySetService(
         var guideTask = extra == MaterialExtra.TeachingGuide
             ? OptionalAsync("Teaching guide", section.Title, async c =>
             {
-                var r = await guides.GenerateAsync(section.Title, text, readableWords, request.Difficulty, section.StartPage, section.EndPage, c);
+                var r = await guides.GenerateAsync(section.Title, text, readableWords, request.Difficulty, section.StartPage, section.EndPage, subject, c);
                 return (r.Guide, r.ErrorCode);
             }, ExtraDone, stopOthers.Token)
             : Task.FromResult<TeachingGuide?>(null);
         var lessonTask = extra == MaterialExtra.Lesson
             ? OptionalAsync("Lesson", section.Title, async c =>
             {
-                var r = await lessons.GenerateAsync(section.Title, text, readableWords, request.Difficulty, section.StartPage, section.EndPage, c);
+                var r = await lessons.GenerateAsync(section.Title, text, readableWords, request.Difficulty, section.StartPage, section.EndPage, subject, c);
                 return (r.Lesson, r.ErrorCode);
             }, ExtraDone, stopOthers.Token)
             : Task.FromResult<StudentLesson?>(null);
         var results = await Task.WhenAll(parts.Select((partCounts, i) => GeneratePartAsync(
-            section.Id, section.Title, text, request.Difficulty, partCounts, request.IsFull, isPart: parts.Count > 1,
+            section.Id, section.Title, text, request.Difficulty, subject, partCounts, request.IsFull, isPart: parts.Count > 1,
             section.StartPage, section.EndPage, (attempt, done) => Report(i, attempt, done), stopOthers)));
         var guide = await guideTask;
         var lesson = await lessonTask;
@@ -121,7 +130,8 @@ public class StudySetService(
 
         var content = WithIds(valid with
         {
-            SectionTitle = section.Title, Difficulty = request.Difficulty, TeachingGuide = guide, Lesson = lesson,
+            SectionTitle = section.Title, Difficulty = request.Difficulty, Subject = subject.Subject, Language = subject.Language,
+            TeachingGuide = guide, Lesson = lesson,
         });
         var now = timeProvider.GetUtcNow();
         var entity = new StudySetEntity
@@ -172,14 +182,14 @@ public class StudySetService(
     public Task<StudySetResult> AddTeachingGuideAsync(Guid id, string ownerId, CancellationToken ct) =>
         RewriteAsync(id, ownerId, async (title, text, words, content, startPage, endPage) =>
         {
-            var result = await guides.GenerateAsync(title, text, words, content.Difficulty, startPage, endPage, ct);
+            var result = await guides.GenerateAsync(title, text, words, content.Difficulty, startPage, endPage, SubjectOf(content), ct);
             return (result.Guide is null ? null : content with { TeachingGuide = result.Guide }, result.ErrorCode);
         }, ct);
 
     public Task<StudySetResult> AddLessonAsync(Guid id, string ownerId, CancellationToken ct) =>
         RewriteAsync(id, ownerId, async (title, text, words, content, startPage, endPage) =>
         {
-            var result = await lessons.GenerateAsync(title, text, words, content.Difficulty, startPage, endPage, ct);
+            var result = await lessons.GenerateAsync(title, text, words, content.Difficulty, startPage, endPage, SubjectOf(content), ct);
             return (result.Lesson is null ? null : content with { Lesson = result.Lesson }, result.ErrorCode);
         }, ct);
 
@@ -264,10 +274,25 @@ public class StudySetService(
             new(c.Theory, 0, 0, 0, 0, 0),
             new(0, c.OpenQuestions, c.TrueFalse, c.Matching, 0, 0),
             new(0, 0, 0, 0, c.MultipleChoice, c.FillBlanks),
+            new(0, 0, 0, 0, 0, 0, c.Problems),
         ];
         var nonEmpty = parts.Where(p => TotalItems(p) > 0).ToList();
         return nonEmpty.Count > 1 ? nonEmpty : [c];
     }
+
+    /// <summary>
+    /// The kind of material as the user set it; what is not set comes from the text. A language goes only with
+    /// programming.
+    /// </summary>
+    internal static MaterialSubject SubjectFor(CreateStudySetRequest request, IEnumerable<string> pages)
+    {
+        var texts = pages.ToList();
+        var subject = request.Subject ?? SubjectDetector.Detect(texts).Subject;
+        var language = subject == Subjects.Programming ? request.Language ?? SubjectDetector.DetectLanguage(texts) : null;
+        return new MaterialSubject(subject, language);
+    }
+
+    private static MaterialSubject SubjectOf(StudySet content) => new(content.Subject, content.Language);
 
     private sealed record PartResult(StudySet? StudySet, string? ErrorCode);
 
@@ -276,11 +301,11 @@ public class StudySetService(
     /// refused…) stops the other parts too, since the material can't be completed without this one.
     /// </summary>
     private async Task<PartResult> GeneratePartAsync(
-        Guid sectionId, string sectionTitle, string text, string difficulty, QuestionCounts counts, bool full, bool isPart,
+        Guid sectionId, string sectionTitle, string text, string difficulty, MaterialSubject subject, QuestionCounts counts, bool full, bool isPart,
         int startPage, int endPage, Action<int, int> onProgress, CancellationTokenSource stopOthers)
     {
         var ct = stopOthers.Token;
-        var user = GenerateStudySetPrompt.User(sectionTitle, text, difficulty, counts, full, isPart);
+        var user = GenerateStudySetPrompt.User(sectionTitle, text, difficulty, counts, full, isPart, subject);
         var schema = GenerateStudySetPrompt.OutputSchema();
         IReadOnlyList<string> errors = [];
         try
@@ -338,11 +363,12 @@ public class StudySetService(
             Matching = all.SelectMany(p => p.Matching).ToList(),
             MultipleChoice = all.SelectMany(p => p.MultipleChoice).ToList(),
             FillBlanks = all.SelectMany(p => p.FillBlanks).ToList(),
+            Problems = all.SelectMany(p => p.Problems).ToList(),
         };
     }
 
     internal static int TotalItems(QuestionCounts c) =>
-        c.Theory + c.OpenQuestions + c.TrueFalse + c.Matching + c.MultipleChoice + c.FillBlanks;
+        c.Theory + c.OpenQuestions + c.TrueFalse + c.Matching + c.MultipleChoice + c.FillBlanks + c.Problems;
 
     /// <summary>Section text with page markers, e.g. "[σελ. 12]", as the prompt expects.</summary>
     internal static string SectionText(IEnumerable<(int Page, string Text)> pages)
@@ -364,7 +390,7 @@ public class StudySetService(
     {
         static int Min(int asked) => asked == 0 ? 0 : Math.Max(1, (int)Math.Ceiling(asked * MinShareOfAsked));
         return new QuestionCounts(Min(c.Theory), Min(c.OpenQuestions), Min(c.TrueFalse), Min(c.Matching),
-            Min(c.MultipleChoice), Min(c.FillBlanks));
+            Min(c.MultipleChoice), Min(c.FillBlanks), Min(c.Problems));
     }
 
     /// <summary>Extra items (more than asked for) are dropped instead of failing the check.</summary>
@@ -376,6 +402,7 @@ public class StudySetService(
         Matching = s.Matching.Take(c.Matching).ToList(),
         MultipleChoice = s.MultipleChoice.Take(c.MultipleChoice).ToList(),
         FillBlanks = s.FillBlanks.Take(c.FillBlanks).ToList(),
+        Problems = s.Problems.Take(c.Problems).ToList(),
     };
 
     private async Task<(StudySet?, IReadOnlyList<string>)> ParseAndValidateAsync(
@@ -411,6 +438,7 @@ public class StudySetService(
         Matching = s.Matching.Select(x => x with { Id = NewId() }).ToList(),
         MultipleChoice = s.MultipleChoice.Select(x => x with { Id = NewId() }).ToList(),
         FillBlanks = s.FillBlanks.Select(x => x with { Id = NewId() }).ToList(),
+        Problems = s.Problems.Select(x => x with { Id = NewId() }).ToList(),
     };
 
     private static string NewId() => Guid.NewGuid().ToString("N");

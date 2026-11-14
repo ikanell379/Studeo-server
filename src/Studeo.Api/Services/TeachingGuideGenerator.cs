@@ -11,7 +11,7 @@ public interface ITeachingGuideGenerator
 {
     /// <param name="sectionText">The section text with page markers ("[σελ. N]").</param>
     Task<TeachingGuideResult> GenerateAsync(
-        string sectionTitle, string sectionText, int words, string difficulty, int startPage, int endPage, CancellationToken ct);
+        string sectionTitle, string sectionText, int words, string difficulty, int startPage, int endPage, MaterialSubject subject, CancellationToken ct);
 }
 
 /// <summary>Either Guide (success) or ErrorCode.</summary>
@@ -25,9 +25,9 @@ public class TeachingGuideGenerator(
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     public async Task<TeachingGuideResult> GenerateAsync(
-        string sectionTitle, string sectionText, int words, string difficulty, int startPage, int endPage, CancellationToken ct)
+        string sectionTitle, string sectionText, int words, string difficulty, int startPage, int endPage, MaterialSubject subject, CancellationToken ct)
     {
-        var user = TeachingGuidePrompt.User(sectionTitle, sectionText, difficulty, TeachingGuidePrompt.KeyPointsFor(words));
+        var user = TeachingGuidePrompt.User(sectionTitle, sectionText, difficulty, TeachingGuidePrompt.KeyPointsFor(words), subject);
         var schema = TeachingGuidePrompt.OutputSchema();
         IReadOnlyList<string> errors = [];
         for (var attempt = 1; attempt <= StudySetService.MaxAttempts; attempt++)

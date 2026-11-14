@@ -26,6 +26,9 @@ public record StudentLesson
 
     /// <summary>«Με μια ματιά»: the main points to keep.</summary>
     public List<string> Summary { get; init; } = [];
+
+    /// <summary>Science lessons: «Τυπολόγιο», the section's formulas with what their symbols mean. Empty otherwise.</summary>
+    public List<FormulaEntry> Formulas { get; init; } = [];
 }
 
 /// <summary>
@@ -38,6 +41,42 @@ public record LessonPart
     public string Explanation { get; init; } = "";
     public string Example { get; init; } = "";
     public SelfCheck Check { get; init; } = new();
+
+    /// <summary>Science lessons: a problem solved step by step for this step («Λυμένο παράδειγμα»); null otherwise.</summary>
+    public WorkedExample? Worked { get; init; }
+
+    /// <summary>Science lessons: «Δοκίμασε εσύ», a similar problem with a hint, its solution hidden; null otherwise.</summary>
+    public PracticeProblem? Practice { get; init; }
+
+    public int Page { get; init; }
+}
+
+/// <summary>A problem with its solution step by step and the result (formulas in LaTeX).</summary>
+public record WorkedExample
+{
+    public string Problem { get; init; } = "";
+    public List<string> Steps { get; init; } = [];
+    public string Answer { get; init; } = "";
+}
+
+/// <summary>A problem for the student to try: a hint, then the solution step by step and the result.</summary>
+public record PracticeProblem
+{
+    public string Problem { get; init; } = "";
+    public string Hint { get; init; } = "";
+    public List<string> Steps { get; init; } = [];
+    public string Answer { get; init; } = "";
+}
+
+/// <summary>
+/// A formula of the section: its name («Μέση ταχύτητα»), the formula in LaTeX (without $), and what each
+/// symbol means with its unit.
+/// </summary>
+public record FormulaEntry
+{
+    public string Name { get; init; } = "";
+    public string Formula { get; init; } = "";
+    public string Meaning { get; init; } = "";
     public int Page { get; init; }
 }
 
@@ -67,4 +106,6 @@ public static class StudentLessonLimits
     public const int MaxMistakes = 6;
     public const int MinSummary = 3;
     public const int MaxSummary = 10;
+    public const int MaxFormulas = 25;
+    public const int MaxSolutionSteps = 8;
 }

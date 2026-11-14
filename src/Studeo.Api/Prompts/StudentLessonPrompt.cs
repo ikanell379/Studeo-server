@@ -35,7 +35,22 @@ public static class StudentLessonPrompt
         - memoryTips: 0–4 κόλπα για να θυμάται (ακρωνύμιο, ομοιοκαταληξία, εικόνα, μοτίβο), μόνο αν πραγματικά βοηθούν.
         - mistakes: 2–5 λάθη που κάνουν συχνά οι μαθητές σε αυτή την ενότητα (mistake) και τι ισχύει στην πραγματικότητα (correction).
         - summary: 4–8 σύντομες προτάσεις «Με μια ματιά» με τα πιο σημαντικά που πρέπει να κρατήσει.
-        """;
+
+        Μόνο σε υλικό θετικών επιστημών (όταν το λέει το «Είδος υλικού»), το μάθημα γίνεται όπως σε φροντιστήριο, με λυμένες ασκήσεις:
+        - Σε κάθε βήμα που έχει τύπο ή υπολογισμό:
+          - worked: λυμένο παράδειγμα. problem: ένα σύντομο πρόβλημα με αριθμούς και μονάδες· steps: 2–5 βήματα λύσης
+            (δεδομένα → τύπος → αντικατάσταση με μονάδες και πράξεις), καθένα σε μία γραμμή με τους τύπους σε LaTeX· answer: το αποτέλεσμα
+            με μονάδα (μόνο εκεί, όχι ξανά ως τελευταίο βήμα «Αποτέλεσμα: …»).
+          - practice: «Δοκίμασε εσύ», ένα παρόμοιο πρόβλημα με άλλους αριθμούς, για να το λύσει μόνος του. hint: μία υπόδειξη που δεν
+            δίνει τη λύση· steps και answer όπως στο worked.
+          Οι αριθμοί μπορούν να είναι δικοί σου, οι τύποι και οι έννοιες βγαίνουν από το κείμενο. Κάνε τις πράξεις προσεκτικά και ξαναέλεγξέ τες.
+          Σε βήμα χωρίς υπολογισμό (π.χ. ορισμός) τα worked και practice έχουν κενά πεδία ("" και []).
+        - formulas: το «Τυπολόγιο»: κάθε τύπος της ενότητας μία φορά. name: τι δίνει (π.χ. «Μέση ταχύτητα»)· formula: ο τύπος σε LaTeX
+          ΧΩΡΙΣ $ (π.χ. v = \frac{\Delta x}{\Delta t})· meaning: τι είναι κάθε σύμβολο και σε ποια μονάδα μετριέται (μπορεί με $…$).
+        - flashcards: βάλε και κάρτες για τους βασικούς τύπους (front: το όνομα του νόμου ή του μεγέθους, back: ο τύπος σε $…$).
+        - mistakes: και λάθη στους υπολογισμούς (μονάδες, μετατροπές, πρόσημα, λάθος τύπος).
+        Σε κάθε άλλο υλικό: worked και practice με κενά πεδία ("" και []) σε όλα τα βήματα, και formulas κενή λίστα.
+        """ + PromptFormatting.Rules;
 
     /// <summary>Roughly one step per 300 words, between the limits.</summary>
     public static int StepsFor(int words) => Math.Clamp((int)Math.Round(words / 300.0), 3, StudentLessonLimits.MaxSteps - 2);
@@ -44,7 +59,7 @@ public static class StudentLessonPrompt
     public static int FlashcardsFor(int words) =>
         Math.Clamp((int)Math.Round(words / 120.0), StudentLessonLimits.MinFlashcards + 2, StudentLessonLimits.MaxFlashcards - 10);
 
-    public static string User(string sectionTitle, string sectionText, string difficulty, int steps, int flashcards)
+    public static string User(string sectionTitle, string sectionText, string difficulty, int steps, int flashcards, MaterialSubject? subject = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"Ενότητα: {sectionTitle}");
@@ -52,6 +67,7 @@ public static class StudentLessonPrompt
         sb.AppendLine($"Βήματα (steps): περίπου {steps}, ώστε να καλύπτεται όλο το κείμενο.");
         sb.AppendLine($"Κάρτες (flashcards): περίπου {flashcards}.");
         sb.AppendLine();
+        sb.Append(PromptFormatting.SubjectNote(subject));
         sb.AppendLine("<κείμενο_ενότητας>");
         sb.AppendLine(sectionText);
         sb.AppendLine("</κείμενο_ενότητας>");
@@ -72,12 +88,15 @@ public static class StudentLessonPrompt
             ["explanation"] = Str(),
             ["example"] = Str(),
             ["check"] = Obj(new() { ["question"] = Str(), ["answer"] = Str() }),
+            ["worked"] = Obj(new() { ["problem"] = Str(), ["steps"] = Arr(Str()), ["answer"] = Str() }),
+            ["practice"] = Obj(new() { ["problem"] = Str(), ["hint"] = Str(), ["steps"] = Arr(Str()), ["answer"] = Str() }),
             ["page"] = Int(),
         })),
         ["flashcards"] = Arr(Obj(new() { ["front"] = Str(), ["back"] = Str(), ["page"] = Int() })),
         ["memoryTips"] = Arr(Str()),
         ["mistakes"] = Arr(Obj(new() { ["mistake"] = Str(), ["correction"] = Str() })),
         ["summary"] = Arr(Str()),
+        ["formulas"] = Arr(Obj(new() { ["name"] = Str(), ["formula"] = Str(), ["meaning"] = Str(), ["page"] = Int() })),
     });
 
     private static JsonObject Str() => new() { ["type"] = "string" };

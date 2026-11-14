@@ -9,7 +9,8 @@ namespace Studeo.Api.Services;
 /// </summary>
 public static class FullCoverage
 {
-    public static QuestionCounts CountsFor(int wordCount)
+    /// <summary>Science material also gets problems, about one per 250 words.</summary>
+    public static QuestionCounts CountsFor(int wordCount, bool science = false)
     {
         var words = Math.Max(wordCount, 0);
         int Per(int wordsPerItem, int min, int max) =>
@@ -21,6 +22,7 @@ public static class FullCoverage
             TrueFalse: Per(200, 4, 15),
             Matching: Per(1500, 1, 3),
             MultipleChoice: Per(200, 4, 15),
-            FillBlanks: Per(300, 3, 10));
+            FillBlanks: Per(300, 3, 10),
+            Problems: science ? Per(250, 3, 8) : 0);
     }
 }

@@ -35,6 +35,18 @@ public static class TestStudySets
             }).ToList(),
         FillBlanks = Enumerable.Range(1, counts.FillBlanks)
             .Select(i => new FillBlankItem { Sentence = "Το ____ είναι οργανίδιο.", Answer = "μιτοχόνδριο", Page = page }).ToList(),
+        Problems = Enumerable.Range(1, counts.Problems)
+            .Select(i => new ProblemItem
+            {
+                Statement = $"Αυτοκίνητο κινείται με $v = {10 * i}\\,\\text{{m/s}}$ για $5\\,\\text{{s}}$. Πόση απόσταση διανύει;",
+                Hints = ["Ποιος τύπος συνδέει απόσταση, ταχύτητα και χρόνο;"],
+                Steps = ["$\\Delta x = v \\cdot t$", $"$\\Delta x = {10 * i} \\cdot 5 = {50 * i}\\,\\text{{m}}$"],
+                Answer = $"$\\Delta x = {50 * i}\\,\\text{{m}}$",
+                IsNumeric = true,
+                NumericValue = 50 * i,
+                Unit = "m",
+                Page = page,
+            }).ToList(),
     };
 
     /// <summary>A teaching guide that passes the check, every key point on <paramref name="page"/>.</summary>
@@ -81,7 +93,7 @@ public static class TestStudySets
         int Asked(string type) =>
             int.Parse(System.Text.RegularExpressions.Regex.Match(userPrompt, $@"- {type}: (\d+)").Groups[1].Value);
         return new QuestionCounts(Asked("theory"), Asked("openQuestions"), Asked("trueFalse"), Asked("matching"),
-            Asked("multipleChoice"), Asked("fillBlanks"));
+            Asked("multipleChoice"), Asked("fillBlanks"), Asked("problems"));
     }
 
     /// <summary>JSON as the model would return it (no ids).</summary>

@@ -23,6 +23,7 @@ public class GeneratedStudySetValidator : AbstractValidator<GeneratedStudySet>
         CountRule("matching", s => s.Matching.Count, c => c.Matching);
         CountRule("multipleChoice", s => s.MultipleChoice.Count, c => c.MultipleChoice);
         CountRule("fillBlanks", s => s.FillBlanks.Count, c => c.FillBlanks);
+        CountRule("problems", s => s.Problems.Count, c => c.Problems);
 
         RuleForEach(g => g.StudySet.Theory).ChildRules(i =>
         {
@@ -77,6 +78,19 @@ public class GeneratedStudySetValidator : AbstractValidator<GeneratedStudySet>
             i.RuleFor(x => x.Answer).NotEmpty();
         });
 
+        RuleForEach(g => g.StudySet.Problems).ChildRules(i =>
+        {
+            i.RuleFor(x => x.Statement).NotEmpty();
+            i.RuleFor(x => x.Answer).NotEmpty();
+            i.RuleFor(x => x.Steps.Count).InclusiveBetween(ProblemLimits.MinSteps, ProblemLimits.MaxSteps).WithName("steps count");
+            i.RuleForEach(x => x.Steps).NotEmpty();
+            i.RuleFor(x => x.Hints.Count).LessThanOrEqualTo(ProblemLimits.MaxHints).WithName("hints count");
+            i.RuleForEach(x => x.Hints).NotEmpty();
+            i.RuleFor(x => x.NumericValue)
+                .Must(double.IsFinite).When(x => x.IsNumeric)
+                .WithMessage("numericValue must be a number when isNumeric is true.");
+        });
+
         RuleFor(g => g)
             .Must(g => Pages(g.StudySet).All(p => p >= g.StartPage && p <= g.EndPage))
             .WithName("page")
@@ -109,5 +123,6 @@ public class GeneratedStudySetValidator : AbstractValidator<GeneratedStudySet>
             .Concat(s.TrueFalse.Select(x => x.Page))
             .Concat(s.Matching.Select(x => x.Page))
             .Concat(s.MultipleChoice.Select(x => x.Page))
-            .Concat(s.FillBlanks.Select(x => x.Page));
+            .Concat(s.FillBlanks.Select(x => x.Page))
+            .Concat(s.Problems.Select(x => x.Page));
 }

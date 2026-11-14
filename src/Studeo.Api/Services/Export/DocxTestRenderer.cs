@@ -160,7 +160,15 @@ public static class DocxTestRenderer
         if (italic) props.Append(new Italic());
         if (color is not null) props.Append(new Color { Val = color });
         if (size > 0) props.Append(new FontSize { Val = size.ToString() });
-        return new Run(props, new Text(text) { Space = SpaceProcessingModeValues.Preserve });
+        // Word ignores line breaks inside a text: each line is its own text, with a break between (a solution's steps).
+        var run = new Run(props);
+        var lines = text.Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (i > 0) run.Append(new Break());
+            run.Append(new Text(lines[i]) { Space = SpaceProcessingModeValues.Preserve });
+        }
+        return run;
     }
 
     /// <summary>Default font and size (11pt) for the whole document, with Greek as the language.</summary>

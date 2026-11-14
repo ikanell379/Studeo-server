@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using Studeo.Api.Contracts;
+using M = DocumentFormat.OpenXml.Math;
 using W = DocumentFormat.OpenXml.Wordprocessing;
 
 namespace Studeo.Api.Services;
@@ -13,6 +14,8 @@ namespace Studeo.Api.Services;
 /// Otherwise (files saved by other programs) the text is split into parts of about <see cref="WordsPerPage"/>
 /// words, at paragraph ends. Manual page breaks always start a new page. Paragraphs set in a heading style
 /// (Heading 1–3) are passed on as headings; headers, footers, footnotes and the table of contents are left out.
+/// Equations (Office Math) become LaTeX between $ (or $$ for an equation on its own line); paragraphs of program
+/// code (a «Code» style or a monospace font such as Consolas) keep their indentation, inside ``` fences.
 /// </summary>
 public partial class DocxTextExtractor(ILogger<DocxTextExtractor> logger)
 {
@@ -45,7 +48,7 @@ public partial class DocxTextExtractor(ILogger<DocxTextExtractor> logger)
                 return TextExtractionResult.Fail(ErrorCodes.TooManyPages);
             }
 
-            return new TextExtractionResult(pages.Select(p => OfficeFiles.Clean(p.Select(l => l.Text))).ToList(), null)
+            return new TextExtractionResult(pages.Select(p => OfficeFiles.Clean(p.Select(l => new TextLine(l.Text, l.Code, l.Lang)))).ToList(), null)
             {
                 Headings = Headings(pages),
             };
@@ -60,8 +63,11 @@ public partial class DocxTextExtractor(ILogger<DocxTextExtractor> logger)
 
     internal abstract record Token;
 
-    /// <summary>A paragraph (or the part of one between page breaks); Level 1–9 for headings.</summary>
-    internal sealed record Line(string Text, int? Level) : Token;
+    /// <summary>
+    /// A paragraph (or the part of one between page breaks); Level 1–9 for headings. Code: a line of a program
+    /// (kept with its indentation), Lang its language when known.
+    /// </summary>
+    internal sealed record Line(string Text, int? Level, bool Code = false, string? Lang = null) : Token;
 
     /// <summary>Rendered: where Word's own layout broke the page; otherwise a manual page break.</summary>
     internal sealed record PageBreak(bool Rendered) : Token;
@@ -83,7 +89,8 @@ public partial class DocxTextExtractor(ILogger<DocxTextExtractor> logger)
                 continue; // «Κεφάλαιο 1 …… 3» lines would look like headings
             }
 
-            var level = OutlineLevel(properties?.OutlineLevel) ?? styles.Level(styleId);
+            var code = IsCode(paragraph, styleId, styles);
+            var level = code ? null : OutlineLevel(properties?.OutlineLevel) ?? styles.Level(styleId);
             if (properties?.PageBreakBefore is { } before && (before.Val?.Value ?? true))
             {
                 yield return new PageBreak(Rendered: false);
@@ -98,13 +105,27 @@ public partial class DocxTextExtractor(ILogger<DocxTextExtractor> logger)
                     continue;
                 }
 
+                // An equation is read as a whole (below); its parts are not text of their own.
+                if (element.Ancestors<M.OfficeMath>().Any())
+                {
+                    continue;
+                }
+
                 switch (element)
                 {
+                    case M.OfficeMath math:
+                        var display = math.Parent is M.Paragraph;
+                        var latex = OmmlLatex.Convert(math);
+                        if (latex.Length > 0)
+                        {
+                            text.Append(display ? $" $${latex}$$ " : $"${latex}$");
+                        }
+                        break;
                     case W.Text t:
                         text.Append(t.Text);
                         break;
                     case W.TabChar:
-                        text.Append(' ');
+                        text.Append(code ? '\t' : ' ');
                         break;
                     case W.NoBreakHyphen:
                         text.Append('-');
@@ -114,7 +135,7 @@ public partial class DocxTextExtractor(ILogger<DocxTextExtractor> logger)
                         break;
                     case W.Break br when br.Type?.Value == W.BreakValues.Page:
                     case W.LastRenderedPageBreak:
-                        if (Take(text, level) is { } part)
+                        if (Take(text, level, code) is { } part)
                         {
                             yield return part;
                         }
@@ -129,19 +150,43 @@ public partial class DocxTextExtractor(ILogger<DocxTextExtractor> logger)
                 }
             }
 
-            if (Take(text, level) is { } line)
+            if (Take(text, level, code) is { } line)
             {
                 yield return line;
             }
         }
     }
 
-    private static Line? Take(StringBuilder text, int? level)
+    private static Line? Take(StringBuilder text, int? level, bool code)
     {
         var value = text.ToString();
         text.Clear();
-        return value.Trim().Length > 0 ? new Line(value, level) : null;
+        return value.Trim().Length > 0 ? new Line(value, level, code) : null;
     }
+
+    /// <summary>
+    /// A paragraph of program code: set in a code style («Code», «HTML Preformatted»…), or all its text in a
+    /// monospace font. A paragraph with an equation is never code.
+    /// </summary>
+    private static bool IsCode(W.Paragraph paragraph, string? styleId, StyleLevels styles)
+    {
+        if (paragraph.Descendants<M.OfficeMath>().Any())
+        {
+            return false;
+        }
+        if (styles.IsCodeStyle(styleId))
+        {
+            return true;
+        }
+        var runs = paragraph.Descendants<W.Run>()
+            .Where(r => ReferenceEquals(r.Ancestors<W.Paragraph>().First(), paragraph)
+                && r.Elements<W.Text>().Any(t => t.Text.Trim().Length > 0))
+            .ToList();
+        return runs.Count > 0 && runs.All(r => OfficeFiles.IsMonospaceFont(
+            Font(r.RunProperties?.RunFonts) ?? styles.Font(r.RunProperties?.RunStyle?.Val?.Value) ?? styles.Font(styleId)));
+    }
+
+    private static string? Font(W.RunFonts? fonts) => fonts?.Ascii?.Value ?? fonts?.HighAnsi?.Value;
 
     /// <summary>
     /// Pages from the page breaks. Without Word's own (rendered) breaks, a page also ends after about
@@ -268,6 +313,36 @@ public partial class DocxTextExtractor(ILogger<DocxTextExtractor> logger)
             return null;
         }
 
+        /// <summary>The font a style sets for its text, following «based on» chains; null when none does.</summary>
+        public string? Font(string? styleId)
+        {
+            for (var depth = 0; depth < 10 && styleId is not null && _byId.TryGetValue(styleId, out var style); depth++)
+            {
+                if (DocxTextExtractor.Font(style.StyleRunProperties?.RunFonts) is { } font)
+                {
+                    return font;
+                }
+                styleId = style.BasedOn?.Val?.Value;
+            }
+            return null;
+        }
+
+        /// <summary>«Code», «Source Code», «HTML Preformatted», «Κώδικας» and styles based on them.</summary>
+        public bool IsCodeStyle(string? styleId)
+        {
+            for (var depth = 0; depth < 10 && styleId is not null; depth++)
+            {
+                var style = _byId.GetValueOrDefault(styleId);
+                var name = style?.StyleName?.Val?.Value ?? styleId;
+                if (CodeStyleRegex().IsMatch(name) || CodeStyleRegex().IsMatch(styleId))
+                {
+                    return true;
+                }
+                styleId = style?.BasedOn?.Val?.Value;
+            }
+            return false;
+        }
+
         public bool IsTableOfContents(string? styleId)
         {
             if (styleId is null)
@@ -284,4 +359,7 @@ public partial class DocxTextExtractor(ILogger<DocxTextExtractor> logger)
 
     [GeneratedRegex(@"\s+")]
     private static partial Regex SpacesRegex();
+
+    [GeneratedRegex(@"code|preformatted|verbatim|listing|κώδικ", RegexOptions.IgnoreCase)]
+    private static partial Regex CodeStyleRegex();
 }

@@ -28,19 +28,23 @@ public static class TeachingGuidePrompt
           απλή εξήγηση, αναλογία, παράδειγμα από το κείμενο, σχήμα στον πίνακα ή ερώτηση προς την τάξη.
         - misconceptions: 2–5 συνηθισμένα λάθη ή παρανοήσεις των μαθητών σε αυτή την ενότητα (mistake) και πώς να τα διορθώσει (correction).
         - discussionQuestions: 3–6 ερωτήσεις για συζήτηση στην τάξη, που ελέγχουν κατανόηση και όχι απομνημόνευση.
-        """;
+        - Σε υλικό θετικών επιστημών: στο lessonPlan μια λυμένη άσκηση στον πίνακα και χρόνος για ασκήσεις των μαθητών (και πείραμα ή
+          επίδειξη όπου ταιριάζει)· στα keyPoints πώς εξηγείται κάθε τύπος (τι σημαίνει κάθε σύμβολο, μονάδες)· στα misconceptions και
+          λάθη υπολογισμών (μονάδες, μετατροπές, πρόσημα, λάθος τύπος).
+        """ + PromptFormatting.Rules;
 
     /// <summary>Roughly one key point per 250 words, between the limits.</summary>
     public static int KeyPointsFor(int words) =>
         Math.Clamp((int)Math.Round(words / 250.0), TeachingGuideLimits.MinKeyPoints + 1, TeachingGuideLimits.MaxKeyPoints - 3);
 
-    public static string User(string sectionTitle, string sectionText, string difficulty, int keyPoints)
+    public static string User(string sectionTitle, string sectionText, string difficulty, int keyPoints, MaterialSubject? subject = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"Ενότητα: {sectionTitle}");
         sb.AppendLine($"Επίπεδο τάξης/δυσκολία του τεστ που θα ακολουθήσει: {difficulty}");
         sb.AppendLine($"Βασικά σημεία (keyPoints): περίπου {keyPoints}, ώστε να καλύπτεται όλο το κείμενο.");
         sb.AppendLine();
+        sb.Append(PromptFormatting.SubjectNote(subject));
         sb.AppendLine("<κείμενο_ενότητας>");
         sb.AppendLine(sectionText);
         sb.AppendLine("</κείμενο_ενότητας>");

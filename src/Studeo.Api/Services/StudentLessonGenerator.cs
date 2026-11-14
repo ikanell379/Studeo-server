@@ -11,7 +11,7 @@ public interface IStudentLessonGenerator
 {
     /// <param name="sectionText">The section text with page markers ("[σελ. N]").</param>
     Task<StudentLessonResult> GenerateAsync(
-        string sectionTitle, string sectionText, int words, string difficulty, int startPage, int endPage, CancellationToken ct);
+        string sectionTitle, string sectionText, int words, string difficulty, int startPage, int endPage, MaterialSubject subject, CancellationToken ct);
 }
 
 /// <summary>Either Lesson (success) or ErrorCode.</summary>
@@ -25,10 +25,10 @@ public class StudentLessonGenerator(
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     public async Task<StudentLessonResult> GenerateAsync(
-        string sectionTitle, string sectionText, int words, string difficulty, int startPage, int endPage, CancellationToken ct)
+        string sectionTitle, string sectionText, int words, string difficulty, int startPage, int endPage, MaterialSubject subject, CancellationToken ct)
     {
         var user = StudentLessonPrompt.User(sectionTitle, sectionText, difficulty,
-            StudentLessonPrompt.StepsFor(words), StudentLessonPrompt.FlashcardsFor(words));
+            StudentLessonPrompt.StepsFor(words), StudentLessonPrompt.FlashcardsFor(words), subject);
         var schema = StudentLessonPrompt.OutputSchema();
         IReadOnlyList<string> errors = [];
         for (var attempt = 1; attempt <= StudySetService.MaxAttempts; attempt++)
@@ -74,7 +74,18 @@ public class StudentLessonGenerator(
         // A page a little off the section is not worth a retry; extra cards are dropped rather than failing.
         lesson = lesson with
         {
-            Steps = lesson.Steps.Select(s => s with { Page = Math.Clamp(s.Page, startPage, endPage) }).ToList(),
+            // The schema always has «worked» and «practice»; empty ones (no calculation in this step) are none.
+            Steps = lesson.Steps.Select(s => s with
+            {
+                Page = Math.Clamp(s.Page, startPage, endPage),
+                Worked = string.IsNullOrWhiteSpace(s.Worked?.Problem) ? null : s.Worked,
+                Practice = string.IsNullOrWhiteSpace(s.Practice?.Problem) ? null : s.Practice,
+            }).ToList(),
+            Formulas = lesson.Formulas
+                .Where(f => !string.IsNullOrWhiteSpace(f.Formula))
+                .Select(f => f with { Page = Math.Clamp(f.Page, startPage, endPage), Formula = f.Formula.Trim().Trim('$').Trim() })
+                .Take(StudentLessonLimits.MaxFormulas)
+                .ToList(),
             Flashcards = lesson.Flashcards
                 .Select(c => c with { Page = Math.Clamp(c.Page, startPage, endPage) })
                 .Take(StudentLessonLimits.MaxFlashcards)

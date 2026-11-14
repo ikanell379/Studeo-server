@@ -425,6 +425,20 @@ public class DocumentsControllerTests(StudeoApiFactory factory) : IClassFixture<
     }
 
     [Fact]
+    public async Task Sections_tell_the_kind_of_material_from_their_text()
+    {
+        var client = factory.CreateClientAs(TestUser.NewStudent());
+        var code = string.Join("\n", Enumerable.Range(1, 8).Select(i => $"    print({i})"));
+        var text = System.Text.Encoding.UTF8.GetBytes($"# Βρόχοι στην Python\nΗ εντολή for:\n```python\nfor i in range(3):\n{code}\n```");
+
+        var document = await (await client.PostAsync("/api/documents", Form(text, "loops.md", "text/markdown")))
+            .Content.ReadFromJsonAsync<DocumentResponse>();
+        var sections = await client.GetFromJsonAsync<List<SectionResponse>>($"/api/documents/{document!.Id}/sections");
+
+        Assert.Equal(new MaterialSubject(Subjects.Programming, "python"), Assert.Single(sections!).Subject);
+    }
+
+    [Fact]
     public async Task Typed_text_is_stored_like_a_text_file_in_the_chosen_course()
     {
         var client = factory.CreateClientAs(TestUser.NewStudent());

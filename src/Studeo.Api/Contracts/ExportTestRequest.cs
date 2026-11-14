@@ -31,6 +31,10 @@ public static class TestQuestionTypes
     public const string FillBlanks = "fillBlanks";
     public const string Matching = "matching";
     public const string OpenQuestions = "openQuestions";
-    public static readonly string[] All = [TrueFalse, MultipleChoice, FillBlanks, Matching, OpenQuestions];
+
+    /// <summary>Science material: problems to solve (the answer key has the solution step by step).</summary>
+    public const string Problems = "problems";
+
+    public static readonly string[] All = [TrueFalse, MultipleChoice, FillBlanks, Matching, OpenQuestions, Problems];
     public const int MaxTitleLength = 150;
 }

@@ -113,11 +113,12 @@ public class DocumentService(
             return null;
         }
         var sections = await repository.GetSectionsAsync(documentId, ct);
-        var pages = await repository.GetPagesAsync(documentId, ct);
-        var unreadable = PageQuality.UnreadablePages(pages.OrderBy(p => p.PageNumber).Select(p => p.Text));
+        var pages = (await repository.GetPagesAsync(documentId, ct)).OrderBy(p => p.PageNumber).ToList();
+        var unreadable = PageQuality.UnreadablePages(pages.Select(p => p.Text));
         return sections
             .Select(s => new SectionResponse(s.Id, s.Order, s.Title, s.StartPage, s.EndPage, s.WordCount, s.IsWholeDocument,
-                unreadable.Where(p => p >= s.StartPage && p <= s.EndPage).ToList()))
+                unreadable.Where(p => p >= s.StartPage && p <= s.EndPage).ToList(),
+                SubjectDetector.Detect(pages.Where(p => p.PageNumber >= s.StartPage && p.PageNumber <= s.EndPage).Select(p => p.Text))))
             .ToList();
     }
 

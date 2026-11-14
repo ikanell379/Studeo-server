@@ -40,7 +40,20 @@ public static class GenerateStudySetPrompt
         - matching: οδηγία και 4–6 ζεύγη (left → right). Όλα τα left διαφορετικά μεταξύ τους, και όλα τα right διαφορετικά μεταξύ τους. Τα ζεύγη δίνονται στη σωστή αντιστοίχιση.
         - multipleChoice: ερώτηση, ακριβώς 4 διαφορετικές επιλογές, ο δείκτης της σωστής (correctIndex, 0–3) και εξήγηση. Οι λάθος επιλογές να είναι αληθοφανείς. Μοίρασε τη σωστή απάντηση σε διάφορες θέσεις.
         - fillBlanks: πρόταση με ακριβώς ένα κενό, σημειωμένο ως "____" (τέσσερις κάτω παύλες), και η λέξη ή φράση που λείπει (answer).
-        """;
+        - problems (μόνο σε υλικό θετικών επιστημών): προβλήματα όπως στις εξετάσεις, που λύνονται με τους τύπους και τις έννοιες του κειμένου.
+          Οι αριθμοί των δεδομένων μπορούν να είναι δικοί σου (ρεαλιστικοί, με μονάδες), αλλά οι τύποι και οι έννοιες βγαίνουν από το κείμενο.
+          - statement: η εκφώνηση: η κατάσταση, τα δεδομένα με τις μονάδες τους και τι ζητείται.
+          - hints: 1–2 υποδείξεις που βοηθούν χωρίς να δίνουν τη λύση (π.χ. ποιο μέγεθος ή ποιος τύπος χρειάζεται).
+          - steps: η λύση βήμα-βήμα, 2–6 βήματα: τα δεδομένα σε σύμβολα, ο τύπος, η αντικατάσταση με μονάδες και οι πράξεις. Μη γράφεις
+            το τελικό αποτέλεσμα ως χωριστό τελευταίο βήμα «Αποτέλεσμα: …»· αυτό πάει μόνο στο answer.
+            Κάθε βήμα 1–2 σύντομες προτάσεις με τους τύπους σε LaTeX.
+          - answer: το τελικό αποτέλεσμα σε μία πρόταση, με μονάδα (π.χ. «Το σώμα διανύει $\Delta x = 100\,\text{m}$.»).
+          - isNumeric: true όταν το ζητούμενο είναι ένας αριθμός· τότε numericValue = ο αριθμός και unit = η μονάδα του σε απλό κείμενο
+            (π.χ. "m/s", "mol", "J", "" για καθαρό αριθμό). Όταν ζητείται εξήγηση, απόδειξη, σχέση ή χημική εξίσωση: isNumeric = false,
+            numericValue = 0, unit = "".
+          - Κάνε τις πράξεις προσεκτικά και ξαναέλεγξέ τες: το numericValue συμφωνεί με το τελευταίο βήμα και το answer.
+          - Από εύκολα (ένας τύπος) προς πιο σύνθετα (δύο βήματα ή συνδυασμός τύπων), ανάλογα με τη δυσκολία.
+        """ + PromptFormatting.Rules;
 
     /// <summary>Extra instructions for "full" mode: cover the whole section, in order.</summary>
     public const string FullCoverage = """
@@ -58,7 +71,8 @@ public static class GenerateStudySetPrompt
         """;
 
     public static string User(
-        string sectionTitle, string sectionText, string difficulty, QuestionCounts counts, bool fullCoverage = false, bool partOnly = false)
+        string sectionTitle, string sectionText, string difficulty, QuestionCounts counts, bool fullCoverage = false, bool partOnly = false,
+        MaterialSubject? subject = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"Ενότητα: {sectionTitle}");
@@ -80,7 +94,9 @@ public static class GenerateStudySetPrompt
         sb.AppendLine($"- matching: {counts.Matching}");
         sb.AppendLine($"- multipleChoice: {counts.MultipleChoice}");
         sb.AppendLine($"- fillBlanks: {counts.FillBlanks}");
+        sb.AppendLine($"- problems: {counts.Problems}");
         sb.AppendLine();
+        sb.Append(PromptFormatting.SubjectNote(subject));
         sb.AppendLine("<κείμενο_ενότητας>");
         sb.AppendLine(sectionText);
         sb.AppendLine("</κείμενο_ενότητας>");
@@ -114,6 +130,18 @@ public static class GenerateStudySetPrompt
             ["question"] = Str(), ["options"] = Arr(Str()), ["correctIndex"] = Int(), ["explanation"] = Str(), ["page"] = Int(),
         })),
         ["fillBlanks"] = Arr(Obj(new() { ["sentence"] = Str(), ["answer"] = Str(), ["page"] = Int() })),
+        // "page" last: the progress counter counts an item as done at its "page" key.
+        ["problems"] = Arr(Obj(new()
+        {
+            ["statement"] = Str(),
+            ["hints"] = Arr(Str()),
+            ["steps"] = Arr(Str()),
+            ["answer"] = Str(),
+            ["isNumeric"] = new JsonObject { ["type"] = "boolean" },
+            ["numericValue"] = new JsonObject { ["type"] = "number" },
+            ["unit"] = Str(),
+            ["page"] = Int(),
+        })),
     });
 
     private static JsonObject Str() => new() { ["type"] = "string" };

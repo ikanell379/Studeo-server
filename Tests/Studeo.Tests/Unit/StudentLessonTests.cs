@@ -49,7 +49,7 @@ public class StudentLessonTests
     {
         _ai.Lesson = Sequence(Json(TestStudySets.ValidLesson(3) with { Summary = [] }), Json(TestStudySets.ValidLesson(3)));
 
-        var result = await Generator().GenerateAsync("Φωτοσύνθεση", "[σελ. 3]\nΚείμενο", 300, "easy", 3, 4, CancellationToken.None);
+        var result = await Generator().GenerateAsync("Φωτοσύνθεση", "[σελ. 3]\nΚείμενο", 300, "easy", 3, 4, MaterialSubject.General, CancellationToken.None);
 
         Assert.Null(result.ErrorCode);
         Assert.Equal(6, result.Lesson!.Flashcards.Count);
@@ -61,9 +61,9 @@ public class StudentLessonTests
     public async Task Generator_gives_up_after_two_bad_answers_and_passes_service_errors_on()
     {
         _ai.Lesson = () => AiResult.Ok("{}");
-        var bad = await Generator().GenerateAsync("Τ", "κείμενο", 100, "easy", 1, 1, CancellationToken.None);
+        var bad = await Generator().GenerateAsync("Τ", "κείμενο", 100, "easy", 1, 1, MaterialSubject.General, CancellationToken.None);
         _ai.Lesson = () => AiResult.Fail(ErrorCodes.AiBusy);
-        var busy = await Generator().GenerateAsync("Τ", "κείμενο", 100, "easy", 1, 1, CancellationToken.None);
+        var busy = await Generator().GenerateAsync("Τ", "κείμενο", 100, "easy", 1, 1, MaterialSubject.General, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.AiInvalidOutput, bad.ErrorCode);
         Assert.Equal(ErrorCodes.AiBusy, busy.ErrorCode);
@@ -76,7 +76,7 @@ public class StudentLessonTests
             .Select(i => new Flashcard { Front = $"Όρος {i}", Back = "Ορισμός.", Page = 9 }).ToList();
         _ai.Lesson = () => Json(TestStudySets.ValidLesson(9) with { Flashcards = tooMany });
 
-        var result = await Generator().GenerateAsync("Τ", "κείμενο", 100, "easy", 3, 4, CancellationToken.None);
+        var result = await Generator().GenerateAsync("Τ", "κείμενο", 100, "easy", 3, 4, MaterialSubject.General, CancellationToken.None);
 
         Assert.All(result.Lesson!.Steps, s => Assert.Equal(4, s.Page));
         Assert.Equal(StudentLessonLimits.MaxFlashcards, result.Lesson.Flashcards.Count);
@@ -91,7 +91,7 @@ public class StudentLessonTests
         Assert.Contains("Χλωροπλάστες", user);
         Assert.Contains("περίπου 4", user);
         Assert.Contains("περίπου 12", user);
-        Assert.Equal(7, schema["required"]!.AsArray().Count);
+        Assert.Equal(8, schema["required"]!.AsArray().Count);
         foreach (var words in new[] { 50, 1000, 30_000 })
         {
             Assert.InRange(StudentLessonPrompt.StepsFor(words), StudentLessonLimits.MinSteps, StudentLessonLimits.MaxSteps);
